@@ -1,0 +1,108 @@
+{
+  "name": "forge-local-agent-ide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "description": "A transactional autonomous coding IDE for local Ollama, LM Studio, and llama.cpp models.",
+  "author": "Forge Contributors",
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c green,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:web": "vite",
+    "start": "node dist-server/server/index.js",
+    "desktop": "npm run code-oss:run",
+    "desktop:dev": "npm run code-oss:runtime && npm run code-oss:run",
+    "legacy:desktop": "npm run build && electron .",
+    "legacy:desktop:dev": "npm run build:server && concurrently -k -n WEB,DESKTOP -c magenta,cyan \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env FORGE_DEV_URL=http://127.0.0.1:5173 electron .\"",
+    "dist:win": "npm run build && electron-builder --win",
+    "build": "npm run typecheck && npm run build:server && npm run build:forge-extension && vite build",
+    "build:forge-extension": "node scripts/build-forge-extension.mjs",
+    "build:server": "tsc -p tsconfig.server.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/forge-agent/tsconfig.json",
+    "test": "tsx --test src/server/*.test.ts",
+    "test:webview": "node scripts/test-forge-webview.mjs",
+    "test:chat": "node scripts/test-chat-integration.mjs",
+    "test:code-oss": "node scripts/test-code-oss-integration.mjs",
+    "extension:package": "node scripts/package-forge-extension.mjs",
+    "code-oss:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-code-oss.ps1",
+    "code-oss:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-code-oss-runtime.ps1",
+    "code-oss:sync": "node scripts/sync-code-oss.mjs",
+    "code-oss:compile": "node scripts/compile-code-oss.mjs",
+    "code-oss:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-code-oss-runtime.ps1",
+    "code-oss:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-code-oss-installer.ps1",
+    "code-oss:run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-code-oss.ps1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "monaco-editor": "^0.52.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/vscode": "^1.125.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vscode/vsce": "^3.9.2",
+    "concurrently": "^9.1.0",
+    "cross-env": "^10.1.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "com.forge.localagent",
+    "productName": "Forge Local Agent IDE",
+    "artifactName": "Forge-Local-Agent-IDE-Portable-${version}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-server/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Forge-Local-Agent-IDE-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "allowScripts": {
+    "electron@43.3.0": true,
+    "esbuild@0.28.2": true,
+    "@vscode/vsce-sign@2.0.9": true
+  }
+}

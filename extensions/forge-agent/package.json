@@ -1,0 +1,152 @@
+{
+  "name": "forge-agent",
+  "displayName": "Forge Local Agent",
+  "description": "Transactional autonomous coding with local Ollama, LM Studio, and llama.cpp models.",
+  "version": "0.4.1",
+  "publisher": "forge",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "local",
+    "agent",
+    "ollama",
+    "lm studio",
+    "llama.cpp"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:forge.agentView",
+    "onCommand:forge.openAgent",
+    "onCommand:forge.restartSidecar"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "forge.provider",
+        "forge.endpoint",
+        "forge.model",
+        "forge.temperature",
+        "forge.maxRepairCycles"
+      ],
+      "description": "Chat and local-model discovery remain available. Autonomous repository reads, validation, and mutation require a trusted workspace."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "forge",
+          "title": "Forge Agent",
+          "icon": "media/forge.svg"
+        }
+      ]
+    },
+    "views": {
+      "forge": [
+        {
+          "id": "forge.agentView",
+          "name": "Agent",
+          "type": "webview",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "forge.openAgent",
+        "title": "Forge: Open Agent Chat",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "forge.restartSidecar",
+        "title": "Forge: Restart Local Agent Sidecar",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "forge.showOutput",
+        "title": "Forge: Show Agent Output",
+        "icon": "$(output)"
+      },
+      {
+        "command": "forge.manageTrust",
+        "title": "Forge: Manage Workspace Trust",
+        "icon": "$(shield)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "forge.restartSidecar",
+          "when": "view == forge.agentView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "forge.showOutput",
+          "when": "view == forge.agentView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "forge.manageTrust",
+          "when": "view == forge.agentView && !isWorkspaceTrusted",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Forge Local Agent",
+      "properties": {
+        "forge.provider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "lmstudio",
+            "llamacpp"
+          ],
+          "default": "ollama",
+          "description": "Local inference runtime used by Forge."
+        },
+        "forge.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Loopback API endpoint for the selected local runtime."
+        },
+        "forge.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model name. Leave empty to use the first model discovered at the endpoint."
+        },
+        "forge.temperature": {
+          "type": "number",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature used for Gather and Apply calls."
+        },
+        "forge.maxRepairCycles": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Maximum repair passes after failed verification."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node ../../scripts/build-forge-extension.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "package": "vsce package --no-dependencies"
+  }
+}

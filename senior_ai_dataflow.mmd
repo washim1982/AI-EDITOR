@@ -1,0 +1,88 @@
+flowchart TD
+    U[User / Orchestrator Task] --> C[Task Contract]
+    C --> S[Snapshot Manager<br/>snapshot_id + per-file SHA]
+
+    subgraph STATE["Trusted State & Derived Indexes"]
+      WS[(Workspace / Git<br/>source of truth)]
+      TS[(Compact Task State<br/>invariants + open decisions)]
+      EV[(Evidence / Artifact Store)]
+      IDX[(Structural + Lexical + Vector Indexes<br/>derived cache)]
+      AUD[(Audit / Telemetry Event Log)]
+    end
+
+    WS --> S
+    TS --> G
+
+    subgraph GATHER["LLM PHASE 1 — GATHER (read-only)"]
+      G[Gather Model]
+      RG[Retrieval Gateway]
+      LEX[Exact lexical / symbol search]
+      AST[AST / symbol / dependency graph]
+      VEC[Dense vector retrieval]
+      MCP[MCP Gateway<br/>allowlisted + sandboxed + read-only]
+      G --> RG
+      RG --> LEX
+      RG --> AST
+      RG --> VEC
+      RG --> MCP
+      LEX --> G
+      AST --> G
+      VEC --> G
+      MCP --> G
+    end
+
+    S --> G
+    IDX --> RG
+    WS --> RG
+    EV --> RG
+
+    G --> B[ExecutionBrief<br/>structured evidence + ChangeSet]
+    B --> SV[Schema Validation]
+    SV --> SEM[Semantic / Policy Validation]
+    SEM -->|blocker or invalid| RG
+    SEM --> RISK{Risk Gate}
+    RISK -->|approval required| H[Human Approval]
+    H --> PG
+    RISK -->|auto| PG
+
+    PG[Pre-Apply CAS Gate<br/>verify target preimage SHAs] -->|stale| G
+    PG --> HY[Target Hydrator<br/>inject current declared target contents]
+
+    subgraph APPLY["LLM PHASE 2 — APPLY (fresh bounded context)"]
+      A[Apply Model<br/>no discovery tools / no MCP / no RAG]
+    end
+
+    HY --> A
+    B --> A
+    C --> A
+    A --> P[Patch / File Mutation Candidate]
+    P --> WV[Write-Set + Patch Validation]
+    WV -->|invalid / undeclared path| FAIL[Fail Safely]
+    WV --> ST[Isolated Staging Workspace<br/>copy-on-write / temp worktree]
+
+    ST --> VERIFY[Deterministic Verification<br/>parse · typecheck · lint · targeted tests · policy]
+    VERIFY -->|repairable failure| D[Structured Diagnostics]
+    D -->|bounded repair cycle| G
+    VERIFY -->|hard failure| FAIL
+
+    VERIFY -->|pass| PCAS[Promotion CAS<br/>snapshot / branch head still valid]
+    PCAS -->|conflict| G
+    PCAS --> COMMIT[Promote / Commit Accepted Change]
+    COMMIT --> WS
+    COMMIT --> ELOG[Append Audit Event]
+    ELOG --> AUD
+    COMMIT --> TUP[Update Compact Task State]
+    TUP --> TS
+
+    COMMIT --> IX[Trusted Deterministic Indexer]
+    IX --> IDX
+
+    G --> AUD
+    SV --> AUD
+    SEM --> AUD
+    PG --> AUD
+    A --> AUD
+    VERIFY --> AUD
+
+    MCP -. untrusted output .-> EV
+    RG -. retrieved evidence .-> EV

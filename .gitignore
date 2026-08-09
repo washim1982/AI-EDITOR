@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-server/
+release/
+vendor/
+.forge/
+extensions/forge-agent/out/
+extensions/forge-agent/server/
+*.vsix
+*.log
+.DS_Store

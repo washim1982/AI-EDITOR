@@ -1,0 +1,30 @@
+{
+  "nameShort": "Forge",
+  "nameLong": "Forge Local Agent IDE",
+  "applicationName": "forge-local-agent",
+  "dataFolderName": ".forge-local-agent",
+  "sharedDataFolderName": ".forge-local-agent-shared",
+  "serverApplicationName": "forge-local-agent-server",
+  "serverDataFolderName": ".forge-local-agent-server",
+  "tunnelApplicationName": "forge-local-agent-tunnel",
+  "win32DirName": "Forge Local Agent IDE",
+  "win32NameVersion": "Forge Local Agent IDE",
+  "win32RegValueName": "ForgeLocalAgent",
+  "win32AppUserModelId": "Forge.LocalAgentIDE",
+  "win32ShellNameShort": "F&orge",
+  "win32MutexName": "forge-local-agent",
+  "win32TunnelServiceMutex": "forge-local-agent-tunnelservice",
+  "win32TunnelMutex": "forge-local-agent-tunnel",
+  "win32x64AppId": "{{60D07D0B-531F-4F5D-8248-1569D39F63C8}",
+  "win32arm64AppId": "{{E4F66078-6255-40F3-BE6C-A10E3D76C42B}",
+  "win32x64UserAppId": "{{267E9AEF-5B7D-47CE-AB0C-6738FAD6A60A}",
+  "win32arm64UserAppId": "{{D78C8B87-E8CD-4B0F-8817-6C44CD7D2232}",
+  "urlProtocol": "forge-local-agent",
+  "linuxIconName": "forge-local-agent",
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item",
+    "latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+    "controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"
+  }
+}
