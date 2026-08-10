@@ -11,7 +11,9 @@ import {
   GitCompareArrows,
   ListTree,
   LoaderCircle,
+  MessageSquare,
   Plus,
+  RefreshCw,
   RotateCcw,
   SearchCode,
   Settings2,
@@ -22,10 +24,29 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import type { AgentEvent, ProviderConfig, ProviderKind, RuntimeStatus } from "../shared/types";
+import MarkdownIt from "markdown-it";
+import type { AgentEvent, ForgeRunManifest, ProviderConfig, ProviderKind, RuntimeStatus } from "../shared/types";
+import { fetchAgentRuns } from "./api";
+
+export interface ForgeChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+}
+
+const markdown = new MarkdownIt({ html: false, linkify: true, breaks: true });
+const defaultLinkOpen = markdown.renderer.rules.link_open;
+markdown.renderer.rules.link_open = (tokens, index, options, environment, self) => {
+  tokens[index].attrSet("target", "_blank");
+  tokens[index].attrSet("rel", "noopener noreferrer");
+  return defaultLinkOpen ? defaultLinkOpen(tokens, index, options, environment, self) : self.renderToken(tokens, index, options);
+};
 
 interface AgentPanelProps {
   events: AgentEvent[];
+  messages: ForgeChatMessage[];
+  mode: "chat" | "agent";
   running: boolean;
   config: ProviderConfig;
   task: string;
@@ -36,13 +57,19 @@ interface AgentPanelProps {
   onCancel: () => void;
   onOpenSettings: () => void;
   onProviderChange: (kind: ProviderKind) => void;
+  onModelChange: (model: string) => void;
+  onModeChange: (mode: "chat" | "agent") => void;
+  onRefreshModels: () => void;
   onNewSession: () => void;
+  onDecision: (decision: "approve" | "retry" | "discard") => void;
 }
 
 function phaseIcon(event: AgentEvent) {
   if (event.status === "error") return <XCircle />;
   if (event.status === "running") return <LoaderCircle className="spinning" />;
   if (event.kind === "snapshot.created") return <GitCompareArrows />;
+  if (event.phase === "plan") return <ListTree />;
+  if (event.phase === "human") return <Clock3 />;
   if (event.phase === "gather") return <SearchCode />;
   if (event.phase === "apply") return <Braces />;
   if (event.phase === "verify") return <TerminalSquare />;
@@ -72,26 +99,45 @@ function TimelineEvent({ event, last }: { event: AgentEvent; last: boolean }) {
   );
 }
 
-function EmptySession() {
+function EmptySession({ mode }: { mode: "chat" | "agent" }) {
   return (
     <div className="empty-session">
       <div className="empty-orbit"><Sparkles /><span /></div>
-      <h3>Build with your local model</h3>
-      <p>Forge separates repository research from mutation, verifies changes in isolation, then promotes only a passing patch.</p>
-      <div className="architecture-mini">
-        <span><SearchCode /> Gather</span>
-        <i />
-        <span><FileCheck2 /> Brief</span>
-        <i />
-        <span><Braces /> Apply</span>
-      </div>
-      <div className="safety-note"><ShieldCheck /> Workspace writes are staged and CAS-protected</div>
+      <h3>{mode === "chat" ? "Chat with your local model" : "Build with your local model"}</h3>
+      <p>{mode === "chat" ? "Ask questions and receive clean Markdown without starting an autonomous coding transaction." : "Forge v2 plans bounded tasks, repairs failures in isolation, and promotes only passing transactions."}</p>
+      {mode === "agent" ? <>
+        <div className="architecture-mini">
+          <span><SearchCode /> Gather</span><i /><span><FileCheck2 /> Brief</span><i /><span><Braces /> Apply</span>
+        </div>
+        <div className="safety-note"><ShieldCheck /> Persisted plans · staged writes · evidence and target CAS</div>
+      </> : <div className="safety-note"><MessageSquare /> Conversational Markdown · no workspace writes</div>}
     </div>
   );
 }
 
+function ChatTimeline({ messages }: { messages: ForgeChatMessage[] }) {
+  return <div className="chat-timeline">{messages.map((message, index) => message.role === "user" ? (
+    <article className="chat-message user" key={message.id}>
+      <header><strong>You</strong><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
+      <p>{message.content}</p>
+    </article>
+  ) : (
+    <ChatResponse key={message.id} message={message} expanded={index === messages.length - 1} />
+  ))}</div>;
+}
+
+function ChatResponse({ message, expanded }: { message: ForgeChatMessage; expanded: boolean }) {
+  const [open, setOpen] = useState(expanded);
+  return <details className="chat-message assistant" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><span><Bot />Forge</span><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><ChevronDown /></summary>
+    <div className="chat-markdown" dangerouslySetInnerHTML={{ __html: markdown.render(message.content) }} />
+  </details>;
+}
+
 export function AgentPanel({
   events,
+  messages,
+  mode,
   running,
   config,
   task,
@@ -102,15 +148,39 @@ export function AgentPanel({
   onCancel,
   onOpenSettings,
   onProviderChange,
+  onModelChange,
+  onModeChange,
+  onRefreshModels,
   onNewSession,
+  onDecision,
 }: AgentPanelProps) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [runHistory, setRunHistory] = useState<ForgeRunManifest[]>([]);
+  const [historyError, setHistoryError] = useState("");
   const lastEventId = events.at(-1)?.id;
+  const suspension = events.at(-1)?.kind === "run.suspended" ? events.at(-1) : undefined;
+  const allowedActions = Array.isArray(suspension?.data?.allowedActions)
+    ? suspension.data.allowedActions.filter((item): item is "approve" | "retry" | "discard" => ["approve", "retry", "discard"].includes(String(item)))
+    : [];
   const statusLabel = useMemo(() => {
-    if (running) return "Autopilot running";
+    if (running) return mode === "chat" ? "Generating locally" : "Autopilot running";
+    if (mode === "chat") return "Chat ready";
+    if (events.at(-1)?.kind === "run.suspended") return "Human decision required";
     if (events.at(-1)?.kind === "run.completed") return "Task complete";
     if (events.at(-1)?.kind === "run.failed") return "Stopped safely";
     return "Ready";
-  }, [events, running]);
+  }, [events, mode, running]);
+  const toggleHistory = async () => {
+    const opening = !historyOpen;
+    setHistoryOpen(opening);
+    if (!opening) return;
+    setHistoryError("");
+    try {
+      setRunHistory(await fetchAgentRuns());
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "Could not load Forge run history.");
+    }
+  };
 
   return (
     <aside className="agent-panel">
@@ -118,17 +188,22 @@ export function AgentPanel({
         <div className="session-tab"><CircleDot /><span>Agent</span><X /></div>
         <div className="agent-actions">
           <button title="New session" onClick={onNewSession}><Plus /></button>
-          <button title="Run history"><ListTree /></button>
+          <button title="Run history" className={historyOpen ? "active" : ""} onClick={() => void toggleHistory()}><ListTree /></button>
           <button title="Settings" onClick={onOpenSettings}><Settings2 /></button>
         </div>
       </header>
       <div className="agent-statusbar">
         <span className={`status-pulse ${running ? "live" : ""}`} />
         <span>{statusLabel}</span>
-        <span className="context-badge">2-phase</span>
+        <span className="context-badge">{mode === "chat" ? "Chat" : "Forge v2"}</span>
       </div>
       <div className="agent-scroll">
-        {events.length === 0 ? <EmptySession /> : events.map((item) => (
+        {historyOpen ? <div className="run-history">
+          <header><strong>Forge v2 runs</strong><button onClick={() => void toggleHistory()}><X /></button></header>
+          {historyError && <div className="inline-error"><XCircle />{historyError}</div>}
+          {!historyError && !runHistory.length && <div className="panel-empty">No persisted agent runs yet.</div>}
+          {runHistory.map((run) => <article key={run.runId}><div><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{run.status}</span></div><small>{run.tasks.filter((task) => task.status === "completed").length}/{run.tasks.length} tasks · {new Date(run.updatedAt).toLocaleString()}</small></article>)}
+        </div> : mode === "chat" ? (messages.length ? <ChatTimeline messages={messages} /> : <EmptySession mode={mode} />) : events.length === 0 ? <EmptySession mode={mode} /> : events.map((item) => (
           <TimelineEvent key={item.id} event={item} last={item.id === lastEventId} />
         ))}
         {error && <div className="inline-error"><XCircle />{error}</div>}
@@ -137,6 +212,16 @@ export function AgentPanel({
         <div className="working-strip">
           <span><LoaderCircle className="spinning" /> Working in isolation…</span>
           <button onClick={onCancel}>Cancel</button>
+        </div>
+      )}
+      {suspension && !running && (
+        <div className="suspension-actions">
+          <span><Clock3 /> Suspended safely</span>
+          <div>
+            {allowedActions.includes("approve") && <button onClick={() => onDecision("approve")}><ShieldCheck />Approve</button>}
+            {allowedActions.includes("retry") && <button onClick={() => onDecision("retry")}><RotateCcw />Retry</button>}
+            {allowedActions.includes("discard") && <button className="danger" onClick={() => onDecision("discard")}><XCircle />Discard</button>}
+          </div>
         </div>
       )}
       <div className="composer-wrap">
@@ -152,16 +237,22 @@ export function AgentPanel({
           />
           <div className="composer-toolbar">
             <div className="provider-switch">
-              <span className={`runtime-dot ${runtime?.reachable && runtime.models.length ? "online" : "offline"}`} />
+              <button className="runtime-refresh" onClick={onRefreshModels} title="Refresh local models"><span className={`runtime-dot ${runtime?.reachable && runtime.models.length ? "online" : "offline"}`} /><RefreshCw /></button>
               <Bot />
               <select value={config.kind} onChange={(event) => onProviderChange(event.target.value as ProviderKind)}>
                 <option value="ollama">Ollama</option>
                 <option value="lmstudio">LM Studio</option>
                 <option value="llamacpp">llama.cpp</option>
               </select>
-              <ChevronDown />
-              <span className="model-name">{config.model || (runtime?.reachable ? "No models" : "Runtime offline")}</span>
+              <select className="model-select" aria-label="Local model" value={config.model} onChange={(event) => onModelChange(event.target.value)} disabled={!runtime?.models.length}>
+                {!runtime?.models.length && <option value="">{runtime?.reachable ? "No models" : "Runtime offline"}</option>}
+                {runtime?.models.map((model) => <option key={model} value={model}>{model}</option>)}
+              </select>
             </div>
+            <select className="agent-mode-select" aria-label="Forge mode" value={mode} onChange={(event) => onModeChange(event.target.value as "chat" | "agent")} disabled={running}>
+              <option value="chat">Chat</option>
+              <option value="agent">Agent v2</option>
+            </select>
             <button
               className={`send-button ${task.trim() ? "enabled" : ""}`}
               disabled={(!task.trim() || !config.model) && !running}
@@ -172,7 +263,7 @@ export function AgentPanel({
             </button>
           </div>
         </div>
-        <div className="composer-caption">Ctrl ↵ to run · local inference only</div>
+        <div className="composer-caption">Ctrl ↵ to send · {mode === "chat" ? "conversation only" : "transactional agent"} · local inference</div>
       </div>
     </aside>
   );

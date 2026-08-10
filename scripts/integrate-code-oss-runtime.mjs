@@ -34,6 +34,10 @@ await Promise.all([
   cp(path.join(workspace, "code-oss", "Forge.cmd"), path.join(runtimeRoot, "Forge.cmd")),
   cp(path.join(workspace, "code-oss", "Forge.Installed.cmd"), path.join(runtimeRoot, "Forge.Installed.cmd")),
   cp(path.join(workspace, "code-oss", "README_FORGE.txt"), path.join(runtimeRoot, "README_FORGE.txt")),
+  cp(path.join(workspace, "build", "icon.ico"), path.join(runtimeRoot, "forge.ico")),
+  cp(path.join(workspace, "build", "icon.ico"), path.join(applicationRoot, "resources", "win32", "code.ico")),
+  cp(path.join(workspace, "build", "code_150x150.png"), path.join(applicationRoot, "resources", "win32", "code_150x150.png")),
+  cp(path.join(workspace, "build", "code_70x70.png"), path.join(applicationRoot, "resources", "win32", "code_70x70.png")),
 ]);
 
 const [product, overrides] = await Promise.all([

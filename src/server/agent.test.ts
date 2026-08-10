@@ -48,6 +48,62 @@ test("Apply output must match the declared write set exactly", () => {
   }, brief), /declared path/i);
 });
 
+test("Forge v2 planner accepts only bounded ordered tasks", () => {
+  const plan = __testables.validateTaskPlan({
+    tasks: [
+      {
+        id: "foundation",
+        title: "Update foundation",
+        objective: "Change the shared contract",
+        scope_hint: ["src/shared/types.ts"],
+        acceptance_criteria: ["The contract typechecks"],
+        depends_on: [],
+      },
+      {
+        id: "client",
+        title: "Update client",
+        objective: "Consume the shared contract",
+        scope_hint: ["src/client/App.tsx"],
+        acceptance_criteria: ["The client builds"],
+        depends_on: ["foundation"],
+      },
+    ],
+  }, "Implement Forge v2", 4);
+  assert.equal(plan.tasks.length, 2);
+  assert.deepEqual(plan.tasks[1].depends_on, ["foundation"]);
+
+  assert.throws(() => __testables.validateTaskPlan({
+    tasks: [{ id: "bad", title: "Bad", objective: "Bad dependency", scope_hint: ["src"], acceptance_criteria: ["Done"], depends_on: ["future"] }],
+  }, "Bad plan", 4), /earlier task/i);
+});
+
+test("Forge v2 Apply requests cannot silently widen the write set", () => {
+  const brief: ExecutionBrief = {
+    version: 1,
+    task_id: "task",
+    snapshot_id: "snap",
+    objective: "Change one file",
+    evidence: [],
+    changes: [{ id: "c1", path: "src/example.ts", operation: "modify", intent: "Update", preimage_sha: "abc", evidence_ids: ["ev1"], depends_on: [] }],
+    invariants: [],
+    validation: { required_checks: [], suggested_commands: [] },
+    blockers: [],
+    risk: { level: "low", reasons: [] },
+  };
+  const snapshot = { id: "snap", createdAt: new Date(0).toISOString(), files: [{ path: "src/example.ts", sha: "abc", size: 1 }] };
+  const context = __testables.validateApplyOutcome({ status: "context_request", queries: ["Example signature"], file_hints: ["src/example.ts"] }, brief, snapshot);
+  assert.equal(context.kind, "context");
+  const amendment = __testables.validateApplyOutcome({ status: "scope_amendment", paths: ["src/helper.ts"], reason: "Helper is required" }, brief, snapshot);
+  assert.equal(amendment.kind, "scope");
+  assert.throws(() => __testables.validateApplyOutcome({ status: "mutations", mutations: [{ change_id: "c1", path: "src/other.ts", operation: "modify", content: "" }] }, brief, snapshot), /declared path/i);
+});
+
+test("Forge v2 classifies deterministic verification failures", () => {
+  assert.equal(__testables.classifyVerificationFailure({ passed: false, diagnostics: "npm run typecheck failed", commands: [] }), "type-lint");
+  assert.equal(__testables.classifyVerificationFailure({ passed: false, diagnostics: "npm run test failed", commands: [] }), "test-semantic");
+  assert.equal(__testables.classifyVerificationFailure({ passed: false, diagnostics: "invalid JSON", commands: [] }), "syntax");
+});
+
 test("workspace snapshots exclude generated, vendored, and discussion trees", async () => {
   const originalRoot = workspaceRoot();
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "forge-snapshot-test-"));

@@ -23,24 +23,26 @@ import {
   Settings,
   ShieldCheck,
   Square,
-  Sparkles,
   Terminal,
   WandSparkles,
   X,
   Zap,
 } from "lucide-react";
 import type { editor } from "monaco-editor";
-import { AgentPanel } from "./AgentPanel";
-import { fetchFile, fetchModels, fetchRuntimes, fetchTree, saveFile, streamAgentRun } from "./api";
-import { Explorer } from "./Explorer";
+import { AgentPanel, type ForgeChatMessage } from "./AgentPanel";
+import { fetchFile, fetchModels, fetchRuntimes, fetchTree, fetchWorkspaceStatus, saveFile, sendChat, streamAgentDecision, streamAgentRun } from "./api";
+import { WorkbenchPanel, type WorkbenchView } from "./WorkbenchPanel";
 import type {
   AgentEvent,
   ProviderConfig,
   ProviderKind,
   RuntimeStatus,
   TreeNode,
+  WorkspaceStatus,
   WorkspaceFile,
 } from "../shared/types";
+
+const forgeIconUrl = new URL("./assets/forge-code-flame.png", import.meta.url).href;
 
 const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
   ollama: {
@@ -98,12 +100,16 @@ function EditorTabs({
   drafts,
   onActivate,
   onClose,
+  onSplit,
+  onActions,
 }: {
   tabs: WorkspaceFile[];
   activePath?: string;
   drafts: Record<string, string>;
   onActivate: (path: string) => void;
   onClose: (path: string) => void;
+  onSplit: () => void;
+  onActions: () => void;
 }) {
   return (
     <div className="editor-tabs">
@@ -123,8 +129,8 @@ function EditorTabs({
         );
       })}
       <div className="tabs-spacer" />
-      <button className="tabs-action" title="Split editor"><LayoutPanelLeft /></button>
-      <button className="tabs-action" title="Editor actions"><span>•••</span></button>
+      <button className="tabs-action" title="Split editor" onClick={onSplit}><LayoutPanelLeft /></button>
+      <button className="tabs-action" title="Editor actions" onClick={onActions}><span>•••</span></button>
     </div>
   );
 }
@@ -244,18 +250,29 @@ export default function App() {
   const [activePath, setActivePath] = useState<string>();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [explorerOpen, setExplorerOpen] = useState(true);
+  const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("explorer");
   const [agentOpen, setAgentOpen] = useState(true);
+  const [editorMaximized, setEditorMaximized] = useState(false);
+  const [splitEditor, setSplitEditor] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [config, setConfig] = useState<ProviderConfig>(loadStoredConfig);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [task, setTask] = useState("");
   const [events, setEvents] = useState<AgentEvent[]>([]);
+  const [chatMessages, setChatMessages] = useState<ForgeChatMessage[]>([]);
+  const [agentMode, setAgentMode] = useState<"chat" | "agent">("chat");
   const [agentError, setAgentError] = useState<string>();
   const [running, setRunning] = useState(false);
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([]);
   const [discoveringRuntimes, setDiscoveringRuntimes] = useState(true);
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatus>({ isRepository: false, branch: "", changes: [] });
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
   const controllerRef = useRef<AbortController>();
+  const bootstrappedRef = useRef(false);
+  const fileHistoryRef = useRef<string[]>([]);
+  const fileHistoryIndexRef = useRef(-1);
   const desktop = Boolean(window.forgeDesktop);
 
   const activeFile = tabs.find((tab) => tab.path === activePath);
@@ -276,6 +293,8 @@ export default function App() {
       });
       if (!discovered.some((runtime) => runtime.reachable && runtime.models.length)) {
         setAgentError("No ready local models were detected. Start Ollama, the LM Studio local server, or llama.cpp, then retry discovery in Settings.");
+      } else {
+        setAgentError(undefined);
       }
       return discovered;
     } catch (error) {
@@ -298,20 +317,28 @@ export default function App() {
     }
   }, []);
 
-  const openFile = useCallback(async (filePath: string, force = false) => {
+  const openFile = useCallback(async (filePath: string, force = false, recordHistory = true) => {
     const existing = tabs.find((tab) => tab.path === filePath);
     if (existing && !force) {
       setActivePath(filePath);
+      if (recordHistory && fileHistoryRef.current[fileHistoryIndexRef.current] !== filePath) {
+        fileHistoryRef.current = [...fileHistoryRef.current.slice(0, fileHistoryIndexRef.current + 1), filePath].slice(-50);
+        fileHistoryIndexRef.current = fileHistoryRef.current.length - 1;
+      }
       return;
     }
     setLoadingFile(true);
     try {
       const file = await fetchFile(filePath);
-      setTabs((current) => existing
+      setTabs((current) => current.some((tab) => tab.path === file.path)
         ? current.map((tab) => tab.path === file.path ? file : tab)
         : [...current, file]);
       setDrafts((current) => ({ ...current, [file.path]: file.content }));
       setActivePath(file.path);
+      if (recordHistory && fileHistoryRef.current[fileHistoryIndexRef.current] !== file.path) {
+        fileHistoryRef.current = [...fileHistoryRef.current.slice(0, fileHistoryIndexRef.current + 1), file.path].slice(-50);
+        fileHistoryIndexRef.current = fileHistoryRef.current.length - 1;
+      }
       setAgentError(undefined);
     } catch (error) {
       setAgentError(error instanceof Error ? error.message : "Could not open the file.");
@@ -321,8 +348,10 @@ export default function App() {
   }, [tabs]);
 
   useEffect(() => {
+    if (bootstrappedRef.current) return;
+    bootstrappedRef.current = true;
     void (async () => {
-      const [nodes] = await Promise.all([refreshTree(), refreshRuntimes()]);
+      const [nodes] = await Promise.all([refreshTree(), refreshRuntimes(), fetchWorkspaceStatus().then(setWorkspaceStatus).catch(() => undefined)]);
       const files = flattenFiles(nodes);
       const initial = files.find((file) => file.path === "src/client/App.tsx") || files.find((file) => file.path.endsWith(".md")) || files[0];
       if (initial) await openFile(initial.path);
@@ -330,6 +359,14 @@ export default function App() {
     // Initial workspace bootstrap only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const navigateFileHistory = (delta: -1 | 1) => {
+    const nextIndex = fileHistoryIndexRef.current + delta;
+    const filePath = fileHistoryRef.current[nextIndex];
+    if (!filePath) return;
+    fileHistoryIndexRef.current = nextIndex;
+    void openFile(filePath, false, false);
+  };
 
   const closeTab = (filePath: string) => {
     const index = tabs.findIndex((tab) => tab.path === filePath);
@@ -364,6 +401,11 @@ export default function App() {
         event.preventDefault();
         void saveActive();
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
+      if (event.key === "Escape") setCommandOpen(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -381,6 +423,12 @@ export default function App() {
     localStorage.setItem("forge.provider", JSON.stringify(next));
   };
 
+  const switchModel = (model: string) => {
+    const next = { ...config, model };
+    setConfig(next);
+    localStorage.setItem("forge.provider", JSON.stringify(next));
+  };
+
   const openWorkspace = async () => {
     if (!window.forgeDesktop || dirty) {
       if (dirty) setAgentError("Save or close the modified editor tab before switching workspaces.");
@@ -391,7 +439,10 @@ export default function App() {
     setTabs([]);
     setDrafts({});
     setActivePath(undefined);
+    fileHistoryRef.current = [];
+    fileHistoryIndexRef.current = -1;
     const nodes = await refreshTree();
+    void fetchWorkspaceStatus().then(setWorkspaceStatus);
     const files = flattenFiles(nodes);
     const initial = files.find((file) => file.path.toLowerCase() === "readme.md") || files[0];
     if (initial) await openFile(initial.path);
@@ -407,10 +458,30 @@ export default function App() {
     const controller = new AbortController();
     controllerRef.current = controller;
     setRunning(true);
-    setEvents([]);
     setAgentError(undefined);
+    const prompt = task.trim();
+    if (agentMode === "chat") {
+      const userMessage: ForgeChatMessage = { id: crypto.randomUUID(), role: "user", content: prompt, timestamp: new Date().toISOString() };
+      setChatMessages((current) => [...current, userMessage]);
+      setTask("");
+      try {
+        const answer = await sendChat(prompt, config, chatMessages.map(({ role, content }) => ({ role, content })), controller.signal);
+        setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: answer, timestamp: new Date().toISOString() }]);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          const message = error instanceof Error ? error.message : "The local model response failed.";
+          setAgentError(message);
+          setChatMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: `### Local model error\n\n${message}\n\nOpen **Settings**, refresh discovery, and confirm the selected model is loaded.`, timestamp: new Date().toISOString() }]);
+        }
+      } finally {
+        setRunning(false);
+        controllerRef.current = undefined;
+      }
+      return;
+    }
+    setEvents([]);
     try {
-      await streamAgentRun({ prompt: task.trim(), provider: config, maxRepairCycles: 1 }, (agentEvent) => {
+      await streamAgentRun({ prompt, provider: config, maxRepairCycles: 1, maxReplans: 1, maxTasks: 6, architecture: "v2" }, (agentEvent) => {
         setEvents((current) => [...current, agentEvent]);
         if (agentEvent.kind === "promotion.complete") {
           void refreshTree();
@@ -420,6 +491,42 @@ export default function App() {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         setAgentError(error instanceof Error ? error.message : "Agent stream failed.");
+      }
+    } finally {
+      setRunning(false);
+      controllerRef.current = undefined;
+    }
+  };
+
+  const decideSuspendedRun = async (decision: "approve" | "retry" | "discard") => {
+    if (running) return;
+    const suspended = events.at(-1);
+    const runId = suspended?.kind === "run.suspended" && typeof suspended.data?.runId === "string" ? suspended.data.runId : "";
+    if (!runId) {
+      setAgentError("The suspended Forge v2 run identifier is unavailable.");
+      return;
+    }
+    let guidance: string | undefined;
+    if (decision === "retry") {
+      const entered = window.prompt("Guidance for the fresh Forge v2 retry:", "Address the reported diagnostics without widening the requested scope.");
+      if (entered === null) return;
+      guidance = entered.trim();
+    }
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setRunning(true);
+    setAgentError(undefined);
+    try {
+      await streamAgentDecision({ runId, decision, guidance }, (agentEvent) => {
+        setEvents((current) => [...current, agentEvent]);
+        if (agentEvent.kind === "promotion.complete") {
+          void refreshTree();
+          if (activePath && !dirty) setTimeout(() => void openFile(activePath, true), 200);
+        }
+      }, controller.signal);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setAgentError(error instanceof Error ? error.message : "Could not apply the Forge v2 decision.");
       }
     } finally {
       setRunning(false);
@@ -464,14 +571,32 @@ export default function App() {
   };
 
   const breadcrumb = useMemo(() => activePath?.split("/") || [], [activePath]);
+  const activateWorkbench = (view: WorkbenchView) => {
+    setWorkbenchView(view);
+    setExplorerOpen(true);
+    setEditorMaximized(false);
+  };
+  const commandFiles = useMemo(() => {
+    const query = commandQuery.trim().toLowerCase().replace(/^>/, "").trim();
+    if (!query) return flattenFiles(tree).slice(0, 10);
+    return flattenFiles(tree).filter((file) => file.path.toLowerCase().includes(query)).slice(0, 15);
+  }, [commandQuery, tree]);
+  const executeCommand = (command: "settings" | "refresh" | "agent" | "checks") => {
+    setCommandOpen(false);
+    setCommandQuery("");
+    if (command === "settings") { setSettingsOpen(true); void refreshRuntimes(); }
+    if (command === "refresh") { void refreshTree(); void refreshRuntimes(); void fetchWorkspaceStatus().then(setWorkspaceStatus); }
+    if (command === "agent") setAgentOpen(true);
+    if (command === "checks") activateWorkbench("run");
+  };
 
   return (
     <main className={`page-shell ${desktop ? "desktop" : ""}`}>
-      <section className="ide-window">
+      <section className={`ide-window ${editorMaximized ? "editor-maximized" : ""}`}>
         <header className="titlebar">
           <div className="window-dots"><span /><span /><span /></div>
-          <div className="nav-controls"><button><ChevronLeft /></button><button><ChevronRight /></button></div>
-          <button className="command-center"><Search /><span>Search files, symbols, or commands</span><kbd>Ctrl K</kbd></button>
+          <div className="nav-controls"><button title="Back" onClick={() => navigateFileHistory(-1)}><ChevronLeft /></button><button title="Forward" onClick={() => navigateFileHistory(1)}><ChevronRight /></button></div>
+          <button className="command-center" onClick={() => setCommandOpen(true)}><Search /><span>Search files, symbols, or commands</span><kbd>Ctrl K</kbd></button>
           <div className="titlebar-actions">
             <div className="layout-controls">
               <button title="Toggle explorer" onClick={() => setExplorerOpen((value) => !value)}>{explorerOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</button>
@@ -488,40 +613,40 @@ export default function App() {
 
         <div className="workbench">
           <nav className="activity-rail">
-            <button className="brand-mark" title="Forge"><span><Sparkles /></span></button>
+            <button className="brand-mark" title="Forge agent" onClick={() => setAgentOpen(true)}><img src={forgeIconUrl} alt="" /></button>
             <div className="activity-primary">
-              <button className="active" title="Explorer"><Files /></button>
-              <button title="Search"><Search /></button>
-              <button title="Source control"><GitBranch /><i>0</i></button>
-              <button title="Run and debug"><Bug /></button>
-              <button title="Extensions"><Blocks /></button>
-              <button title="Local agent"><Bot /></button>
+              <button className={explorerOpen && workbenchView === "explorer" ? "active" : ""} title="Explorer" onClick={() => activateWorkbench("explorer")}><Files /></button>
+              <button className={explorerOpen && workbenchView === "search" ? "active" : ""} title="Search" onClick={() => activateWorkbench("search")}><Search /></button>
+              <button className={explorerOpen && workbenchView === "source" ? "active" : ""} title="Source control" onClick={() => activateWorkbench("source")}><GitBranch />{workspaceStatus.changes.length > 0 && <i>{workspaceStatus.changes.length}</i>}</button>
+              <button className={explorerOpen && workbenchView === "run" ? "active" : ""} title="Run and checks" onClick={() => activateWorkbench("run")}><Bug /></button>
+              <button className={explorerOpen && workbenchView === "extensions" ? "active" : ""} title="Extensions" onClick={() => activateWorkbench("extensions")}><Blocks /></button>
+              <button className={agentOpen ? "active" : ""} title="Local agent" onClick={() => setAgentOpen((value) => !value)}><img className="forge-rail-icon" src={forgeIconUrl} alt="" /></button>
             </div>
             <div className="activity-bottom">
-              <button title="Security policy"><ShieldCheck /></button>
+              <button className={explorerOpen && workbenchView === "security" ? "active" : ""} title="Security policy" onClick={() => activateWorkbench("security")}><ShieldCheck /></button>
               <button title="Settings" onClick={() => { setSettingsOpen(true); void refreshRuntimes(); }}><Settings /></button>
             </div>
           </nav>
 
-          {explorerOpen && (
-            <Explorer nodes={tree} activePath={activePath} rootName={rootName} onOpen={(path) => void openFile(path)} onRefresh={() => void refreshTree()} onOpenWorkspace={desktop ? () => void openWorkspace() : undefined} />
+          {explorerOpen && !editorMaximized && (
+            <WorkbenchPanel view={workbenchView} nodes={tree} activePath={activePath} rootName={rootName} onOpen={(path) => void openFile(path)} onRefreshTree={() => void refreshTree()} onOpenWorkspace={desktop ? () => void openWorkspace() : undefined} onOpenSettings={() => { setSettingsOpen(true); void refreshRuntimes(); }} onStatus={setWorkspaceStatus} />
           )}
 
           <section className="editor-pane">
-            <EditorTabs tabs={tabs} activePath={activePath} drafts={drafts} onActivate={setActivePath} onClose={closeTab} />
+            <EditorTabs tabs={tabs} activePath={activePath} drafts={drafts} onActivate={(path) => void openFile(path)} onClose={closeTab} onSplit={() => setSplitEditor((value) => !value)} onActions={() => setCommandOpen(true)} />
             <div className="editor-breadcrumbs">
               {breadcrumb.map((part, index) => (
                 <span key={`${part}-${index}`}><Code2 />{part}{index < breadcrumb.length - 1 && <ChevronRight />}</span>
               ))}
               <div className="breadcrumb-actions">
                 <button className={dirty ? "save active" : "save"} onClick={() => void saveActive()} disabled={!dirty} title="Save file"><Save /></button>
-                <button title="Run checks"><Play /></button>
-                <button title="Maximize editor"><Maximize2 /></button>
+                <button title="Run checks" onClick={() => activateWorkbench("run")}><Play /></button>
+                <button className={editorMaximized ? "active" : ""} title={editorMaximized ? "Restore editor" : "Maximize editor"} onClick={() => setEditorMaximized((value) => !value)}><Maximize2 /></button>
               </div>
             </div>
-            <div className="editor-surface">
+            <div className={`editor-surface ${splitEditor ? "split" : ""}`}>
               {activeFile ? (
-                <Editor
+                <><Editor
                   height="100%"
                   path={activeFile.path}
                   language={activeFile.language}
@@ -546,6 +671,26 @@ export default function App() {
                     guides: { bracketPairs: true, indentation: true },
                   }}
                 />
+                {splitEditor && <Editor
+                  height="100%"
+                  path={activeFile.path}
+                  language={activeFile.language}
+                  value={activeDraft}
+                  beforeMount={beforeMount}
+                  theme="forge-dark"
+                  onChange={(value) => setDrafts((current) => ({ ...current, [activeFile.path]: value ?? "" }))}
+                  options={{
+                    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+                    fontSize: 13.5,
+                    lineHeight: 23,
+                    minimap: { enabled: false },
+                    padding: { top: 18, bottom: 24 },
+                    smoothScrolling: true,
+                    wordWrap: "off",
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                  }}
+                />}</>
               ) : (
                 <div className="editor-empty">
                   {loadingFile ? <WandSparkles className="float-icon" /> : <Code2 />}
@@ -556,9 +701,11 @@ export default function App() {
             </div>
           </section>
 
-          {agentOpen && (
+          {agentOpen && !editorMaximized && (
             <AgentPanel
               events={events}
+              messages={chatMessages}
+              mode={agentMode}
               running={running}
               config={config}
               task={task}
@@ -569,13 +716,17 @@ export default function App() {
               onCancel={() => controllerRef.current?.abort()}
               onOpenSettings={() => { setSettingsOpen(true); void refreshRuntimes(); }}
               onProviderChange={switchProvider}
-              onNewSession={() => { if (!running) { setEvents([]); setAgentError(undefined); setTask(""); } }}
+              onModelChange={switchModel}
+              onModeChange={setAgentMode}
+              onRefreshModels={() => void refreshRuntimes()}
+              onNewSession={() => { if (!running) { setEvents([]); setChatMessages([]); setAgentError(undefined); setTask(""); } }}
+              onDecision={(decision) => void decideSuspendedRun(decision)}
             />
           )}
         </div>
 
         <footer className="statusbar">
-          <div><span className="branch"><GitBranch /> main*</span><span><Check /> 0</span><span><X /> 0</span></div>
+          <div><span className="branch"><GitBranch /> {workspaceStatus.isRepository ? workspaceStatus.branch || "detached" : "no repository"}{workspaceStatus.changes.length ? "*" : ""}</span><span><Check /> {workspaceStatus.changes.length}</span><span><X /> {agentError ? 1 : 0}</span></div>
           <div>
             <span>{saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "error" ? "Save failed" : dirty ? "Modified" : "Synced"}</span>
             <span>{discoveringRuntimes ? "Detecting runtimes…" : activeRuntime?.reachable ? `${activeRuntime.label} · ${config.model || "no model"}` : "Runtime offline"}</span>
@@ -583,6 +734,24 @@ export default function App() {
           </div>
         </footer>
       </section>
+
+      {commandOpen && (
+        <div className="command-backdrop" onMouseDown={() => setCommandOpen(false)}>
+          <section className="command-palette" onMouseDown={(event) => event.stopPropagation()}>
+            <label><Search /><input autoFocus value={commandQuery} onChange={(event) => setCommandQuery(event.target.value)} placeholder="Search files or type a command" /></label>
+            <div className="command-results">
+              <div className="command-group-title">Commands</div>
+              <button onClick={() => executeCommand("settings")}><Settings /><span>Forge: Open Local Model Settings</span><kbd>Settings</kbd></button>
+              <button onClick={() => executeCommand("refresh")}><Zap /><span>Forge: Refresh Workspace and Models</span><kbd>Refresh</kbd></button>
+              <button onClick={() => executeCommand("agent")}><Bot /><span>Forge: Open Agent Chat</span><kbd>Agent</kbd></button>
+              <button onClick={() => executeCommand("checks")}><Play /><span>Forge: Run Project Checks</span><kbd>Checks</kbd></button>
+              <div className="command-group-title">Files</div>
+              {commandFiles.map((file) => <button key={file.path} onClick={() => { setCommandOpen(false); setCommandQuery(""); void openFile(file.path); }}><Files /><span>{file.path}</span></button>)}
+              {!commandFiles.length && <div className="command-empty">No matching files.</div>}
+            </div>
+          </section>
+        </div>
+      )}
 
       {settingsOpen && (
         <SettingsModal

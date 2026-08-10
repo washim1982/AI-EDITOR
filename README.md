@@ -1,6 +1,6 @@
 # Forge — Local Agent IDE
 
-Forge is a native Windows coding-assistant IDE for local/open-weight models. It implements the two-phase architecture in `senior_ai_architecture_review.md`: an ephemeral read-only **Gather** phase creates a validated `ExecutionBrief`, then a fresh bounded **Apply** phase may generate mutations only for the declared files.
+Forge v2 is a native Windows coding-assistant IDE for local/open-weight models. It keeps the original Forge Electron/Monaco IDE and the Code-OSS workbench as two supported shells over one local agent service. A bounded planner creates an ordered task queue; every task uses a fresh read-only **Gather** phase and a fresh constrained **Apply** phase before any verified change can be promoted.
 
 ![Forge architecture](./senior_ai_dataflow.svg)
 
@@ -9,12 +9,15 @@ Forge is a native Windows coding-assistant IDE for local/open-weight models. It 
 - Electron + React + Monaco Windows IDE with native folder selection, multi-tab editing, frameless window controls, save conflict detection, local-model settings, and a live agent event timeline.
 - Local adapters for **Ollama**, **LM Studio**, and **llama.cpp**. The API accepts loopback endpoints only.
 - Automatic runtime discovery on ports `11434`, `1234`, and `8080`; Forge selects a model that is actually available instead of assuming a model name.
+- Strict planner output, bounded task queues, explicit acceptance criteria, and one bounded replan when aggregate verification fails.
 - Repository snapshot and per-file SHA-256 preconditions.
 - Bounded lexical/structural-context retrieval with focused evidence regions.
 - Strict `ExecutionBrief` and mutation-set validation with one correction attempt.
+- Read-only context requests and explicit scope-amendment requests; the model cannot silently widen its write set.
 - Just-in-time target hydration; Apply has no search, MCP, shell, or general read capability.
-- Copy-on-write staging in a temporary workspace, trusted project checks, final CAS, promotion, rollback on promotion errors, and an audit log at `.forge/audit.jsonl`.
-- One bounded Gather repair cycle when deterministic verification fails.
+- Copy-on-write staging, evidence/target CAS checks, a persistent promotion journal with recovery/rollback, and an audit log at `.forge/audit.jsonl`.
+- Classified repair: fast Apply-only repair for syntax/type/lint failures and deep Gather/Apply repair for other failures.
+- Persistent run manifests in `.forge/runs/`, safe suspend/resume/discard controls, and final aggregate verification across completed tasks.
 - High-risk plans stop for human review. `discussion` directories are excluded from browsing, retrieval, staging, and mutation.
 
 ## Code-OSS Windows application
@@ -44,7 +47,7 @@ existing Visual Studio Code, VSCodium, and Forge profiles are not changed.
 
 Open VSX is configured as the extension gallery. You can also use **Extensions:
 Install from VSIX...** from the Command Palette or Extensions view. The
-standalone Forge extension is produced at `release/forge-agent-0.4.1.vsix`.
+standalone Forge extension is produced at `release/forge-agent-0.5.0.vsix`.
 
 To build directly from Microsoft's official Code-OSS source instead, install
 the Windows C++ build workload including the latest x64/x86 Spectre-mitigated
@@ -67,18 +70,27 @@ npm run code-oss:package
 npm run code-oss:installer
 ```
 
-## Legacy Electron prototype
+## Original Forge IDE
 
-The original custom Electron/Monaco shell is retained only for reference. Its
-Search, Source Control, Run/Debug, Extensions, and command-center controls were
-visual placeholders. Use the Code-OSS installer or portable ZIP for a complete
-workbench.
+The original Electron/React/Monaco interface remains supported as the focused
+Forge experience. It includes the Forge v2 chat, local runtime/model selection,
+task plan and event timeline, suspension decisions, repository tree, editor,
+runtime settings, workspace content search, Git status, trusted project checks,
+file navigation history, split/maximized editing, and a command palette. Chat
+mode handles ordinary Markdown conversations; Agent v2 is selected explicitly
+for autonomous coding transactions. Code-OSS remains the full-workbench option
+for debugging, terminals, language services, keybindings, and VSIX/Open VSX
+extensions.
 
-The two prototype distributables are archived in `release/legacy-electron/` so
-they cannot be confused with the Code-OSS installer:
+Run or package the original shell independently:
 
-- `Forge-Local-Agent-IDE-Setup-0.1.0-x64.exe` — legacy prototype installer.
-- `Forge-Local-Agent-IDE-Portable-0.1.0-x64.exe` — legacy prototype portable application.
+```powershell
+npm run forge:desktop:dev
+npm run forge:dist:win
+```
+
+Its artifacts use `Forge-Original-IDE-*` names so they cannot be confused with
+the `Forge-CodeOSS-*` installer and portable ZIP.
 
 On first launch Forge opens your Documents folder. Use the folder button beside the workspace name to choose a code repository; the last workspace is remembered.
 
@@ -101,8 +113,9 @@ and launch the workbench:
 npm run desktop:dev
 ```
 
-The legacy React prototype remains available with `npm run legacy:desktop:dev`.
-Its browser-hosted version uses `npm run dev` at
+The original Forge IDE runs with `npm run forge:desktop:dev`. The Code-OSS IDE
+runs with `npm run codeoss:desktop:dev` (or the compatible `desktop:dev` alias).
+The browser-hosted original interface uses `npm run dev` at
 [http://127.0.0.1:5173](http://127.0.0.1:5173).
 
 Default provider endpoints:
@@ -130,7 +143,9 @@ npm test
 npm run test:code-oss
 npm run build
 npm run extension:package
-npm run dist:win
+npm run forge:dist:win
+npm run code-oss:package
+npm run code-oss:installer
 ```
 
 In a staged candidate workspace, Forge runs recognized trusted scripts in this order when present: `typecheck`, `lint`, `test`, and `build`. Commands suggested by a model are recorded in the brief but are never executed automatically.
@@ -138,9 +153,10 @@ In a staged candidate workspace, Forge runs recognized trusted scripts in this o
 ## Safety model
 
 ```text
-task → snapshot → Gather/retrieve → validate brief → target CAS/hydration
-     → fresh Apply → validate write set → isolated stage → deterministic checks
-     → promotion CAS → atomic file writes → audit
+task → bounded plan → task queue → fresh snapshot/Gather → validate brief
+     → evidence CAS/hydration → fresh Apply → validate write set → isolated stage
+     → classified verification/repair → target CAS → journaled promotion → audit
+     → final aggregate verification → complete or bounded replan/suspend
 ```
 
 The source workspace remains untouched when a model response is invalid, a preimage is stale, a mutation escapes its declared write set, or staged verification fails. External MCP mutation is intentionally not part of this P0 implementation.

@@ -17,7 +17,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $RuntimeRoot "Forge.cmd"))) {
 }
 
 $ReleaseRoot = Join-Path $WorkspaceRoot "release"
-$Artifact = Join-Path $ReleaseRoot "Forge-CodeOSS-Portable-0.1.0-x64.zip"
+$Artifact = Join-Path $ReleaseRoot "Forge-CodeOSS-Portable-0.2.0-x64.zip"
 New-Item -ItemType Directory -Force -Path $ReleaseRoot | Out-Null
 if (Test-Path -LiteralPath $Artifact) {
   Remove-Item -LiteralPath $Artifact

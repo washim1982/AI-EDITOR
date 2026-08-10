@@ -1,6 +1,6 @@
 {
   "name": "forge-local-agent-ide",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -13,8 +13,13 @@
     "start": "node dist-server/server/index.js",
     "desktop": "npm run code-oss:run",
     "desktop:dev": "npm run code-oss:runtime && npm run code-oss:run",
+    "codeoss:desktop": "npm run code-oss:run",
+    "codeoss:desktop:dev": "npm run code-oss:runtime && npm run code-oss:run",
+    "forge:desktop": "npm run build && electron .",
+    "forge:desktop:dev": "npm run build:server && concurrently -k -n WEB,DESKTOP -c magenta,cyan \"vite\" \"wait-on --timeout 30000 http://127.0.0.1:5173 && cross-env FORGE_DEV_URL=http://127.0.0.1:5173 electron .\"",
+    "forge:dist:win": "npm run build && electron-builder --win",
     "legacy:desktop": "npm run build && electron .",
-    "legacy:desktop:dev": "npm run build:server && concurrently -k -n WEB,DESKTOP -c magenta,cyan \"vite\" \"wait-on http://127.0.0.1:5173 && cross-env FORGE_DEV_URL=http://127.0.0.1:5173 electron .\"",
+    "legacy:desktop:dev": "npm run build:server && concurrently -k -n WEB,DESKTOP -c magenta,cyan \"vite\" \"wait-on --timeout 30000 http://127.0.0.1:5173 && cross-env FORGE_DEV_URL=http://127.0.0.1:5173 electron .\"",
     "dist:win": "npm run build && electron-builder --win",
     "build": "npm run typecheck && npm run build:server && npm run build:forge-extension && vite build",
     "build:forge-extension": "node scripts/build-forge-extension.mjs",
@@ -22,6 +27,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p extensions/forge-agent/tsconfig.json",
     "test": "tsx --test src/server/*.test.ts",
     "test:webview": "node scripts/test-forge-webview.mjs",
+    "test:electron-ui": "node scripts/test-forge-electron-ui.mjs",
     "test:chat": "node scripts/test-chat-integration.mjs",
     "test:code-oss": "node scripts/test-code-oss-integration.mjs",
     "extension:package": "node scripts/package-forge-extension.mjs",
@@ -40,6 +46,7 @@
     "@monaco-editor/react": "^4.7.0",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
+    "markdown-it": "^14.3.0",
     "monaco-editor": "^0.52.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -65,7 +72,7 @@
   "build": {
     "appId": "com.forge.localagent",
     "productName": "Forge Local Agent IDE",
-    "artifactName": "Forge-Local-Agent-IDE-Portable-${version}-${arch}.${ext}",
+    "artifactName": "Forge-Original-IDE-Portable-${version}-${arch}.${ext}",
     "asar": true,
     "directories": {
       "output": "release"
@@ -74,9 +81,11 @@
       "dist/**/*",
       "dist-server/**/*",
       "electron/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -93,7 +102,7 @@
       ]
     },
     "nsis": {
-      "artifactName": "Forge-Local-Agent-IDE-Setup-${version}-${arch}.${ext}",
+      "artifactName": "Forge-Original-IDE-Setup-${version}-${arch}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

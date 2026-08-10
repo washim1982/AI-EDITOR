@@ -27,8 +27,12 @@ if (-not $NsisCompiler) {
 }
 
 $ReleaseRoot = Join-Path $WorkspaceRoot "release"
-$Artifact = Join-Path $ReleaseRoot "Forge-CodeOSS-Setup-0.1.0-x64.exe"
+$Artifact = Join-Path $ReleaseRoot "Forge-CodeOSS-Setup-0.2.0-x64.exe"
 $InstallerScript = Join-Path $PSScriptRoot "forge-code-oss-installer.nsi"
+$ForgeIcon = Join-Path $WorkspaceRoot "build\icon.ico"
+if (-not (Test-Path -LiteralPath $ForgeIcon)) {
+  throw "Forge installer icon is missing: $ForgeIcon"
+}
 New-Item -ItemType Directory -Force -Path $ReleaseRoot | Out-Null
 $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
 $ReleasePrefix = $ReleaseRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
@@ -49,7 +53,7 @@ try {
   if (Test-Path -LiteralPath $Artifact) {
     Remove-Item -LiteralPath $Artifact
   }
-  & $NsisCompiler.FullName "/WX" "/DForgeRuntime=$StagingRoot" "/DForgeOutput=$Artifact" $InstallerScript
+  & $NsisCompiler.FullName "/WX" "/DForgeRuntime=$StagingRoot" "/DForgeOutput=$Artifact" "/DForgeIcon=$ForgeIcon" $InstallerScript
   if ($LASTEXITCODE -ne 0) { throw "Forge Code-OSS NSIS installer build failed." }
 } finally {
   if (Test-Path -LiteralPath $StagingRoot) {

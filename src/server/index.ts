@@ -3,9 +3,11 @@ import type { Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import express, { type Express } from "express";
-import type { AgentRunRequest, ChatRequest, ProviderConfig } from "../shared/types.js";
-import { runAgentLoop } from "./agent.js";
+import type { AgentDecisionRequest, AgentRunRequest, ChatRequest, ProviderConfig } from "../shared/types.js";
+import { recoverInterruptedPromotions, resumeAgentLoop, runAgentLoop, runAgentLoopV2 } from "./agent.js";
 import { chatWithLocalModel, discoverLocalRuntimes, listLocalModels } from "./providers.js";
+import { listRunManifests, readRunManifest, recoverInterruptedRuns } from "./run-store.js";
+import { readProjectScripts, readWorkspaceStatus, runProjectCheck, searchWorkspace } from "./workbench.js";
 import { buildWorkspaceTree, createSnapshot, readWorkspaceFile, repositoryMap, retrieveEvidence, saveWorkspaceFile, workspaceRoot } from "./workspace.js";
 
 function isProviderConfig(value: unknown): value is ProviderConfig {
@@ -48,6 +50,8 @@ async function findRendererDist(): Promise<string | undefined> {
 
 export async function createApiApp(): Promise<Express> {
   const app = express();
+  const recoveredTransactions = await recoverInterruptedPromotions();
+  const recoveredRuns = await recoverInterruptedRuns();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "4mb" }));
 
@@ -70,6 +74,9 @@ export async function createApiApp(): Promise<Express> {
       workspace: workspaceRoot(),
       desktop: Boolean(process.env.FORGE_DESKTOP),
       codeOss: Boolean(process.env.FORGE_CODE_OSS),
+      forgeVersion: 2,
+      recoveredTransactions,
+      recoveredRuns,
     });
   });
 
@@ -86,6 +93,48 @@ export async function createApiApp(): Promise<Express> {
       response.json({ nodes: await buildWorkspaceTree(), root: workspaceRoot() });
     } catch (error) {
       response.status(500).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/search", async (request, response) => {
+    try {
+      const query = String(request.query.q || "").trim();
+      response.json({ results: await searchWorkspace(query) });
+    } catch (error) {
+      response.status(500).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/workspace/status", async (_request, response) => {
+    try {
+      response.json(await readWorkspaceStatus());
+    } catch (error) {
+      response.status(500).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/project/scripts", async (_request, response) => {
+    try {
+      response.json(await readProjectScripts());
+    } catch (error) {
+      response.status(500).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/project/check", async (request, response) => {
+    const name = typeof request.body?.name === "string" ? request.body.name : "";
+    const controller = new AbortController();
+    let finished = false;
+    response.on("close", () => {
+      if (!finished) controller.abort();
+    });
+    try {
+      const result = await runProjectCheck(name, controller.signal);
+      finished = true;
+      response.json(result);
+    } catch (error) {
+      finished = true;
+      if (!response.writableEnded) response.status(400).json({ error: errorMessage(error) });
     }
   });
 
@@ -226,12 +275,62 @@ export async function createApiApp(): Promise<Express> {
     });
 
     try {
-      await runAgentLoop(
+      const runner = body.architecture === "v1" ? runAgentLoop : runAgentLoopV2;
+      await runner(
         {
           prompt: body.prompt.trim(),
           provider: body.provider,
           maxRepairCycles: body.maxRepairCycles,
+          maxReplans: body.maxReplans,
+          maxTasks: body.maxTasks,
+          architecture: body.architecture ?? "v2",
         },
+        (agentEvent) => {
+          if (!response.writableEnded) response.write(`${JSON.stringify(agentEvent)}\n`);
+        },
+        controller.signal,
+      );
+    } finally {
+      finished = true;
+      if (!response.writableEnded) response.end();
+    }
+  });
+
+  app.get("/api/agent/runs", async (_request, response) => {
+    try {
+      response.json({ runs: await listRunManifests() });
+    } catch (error) {
+      response.status(500).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.get("/api/agent/runs/:runId", async (request, response) => {
+    try {
+      response.json({ run: await readRunManifest(String(request.params.runId || "")) });
+    } catch (error) {
+      response.status(404).json({ error: errorMessage(error) });
+    }
+  });
+
+  app.post("/api/agent/resume", async (request, response) => {
+    const body = request.body as Partial<AgentDecisionRequest>;
+    if (typeof body.runId !== "string" || !["approve", "retry", "discard"].includes(String(body.decision))) {
+      response.status(400).json({ error: "A runId and valid Forge v2 decision are required." });
+      return;
+    }
+    response.status(200);
+    response.setHeader("content-type", "application/x-ndjson; charset=utf-8");
+    response.setHeader("cache-control", "no-cache, no-transform");
+    response.setHeader("x-content-type-options", "nosniff");
+    response.flushHeaders();
+    const controller = new AbortController();
+    let finished = false;
+    response.on("close", () => {
+      if (!finished) controller.abort();
+    });
+    try {
+      await resumeAgentLoop(
+        { runId: body.runId, decision: body.decision as AgentDecisionRequest["decision"], guidance: typeof body.guidance === "string" ? body.guidance : undefined },
         (agentEvent) => {
           if (!response.writableEnded) response.write(`${JSON.stringify(agentEvent)}\n`);
         },

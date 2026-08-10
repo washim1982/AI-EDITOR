@@ -9,7 +9,6 @@ import {
   FileText,
   Folder,
   FolderOpen,
-  MoreHorizontal,
   RefreshCw,
 } from "lucide-react";
 import type { TreeNode } from "../shared/types";
@@ -81,18 +80,13 @@ export function Explorer({ nodes, activePath, rootName, onOpen, onRefresh, onOpe
         <span>{rootName || "WORKSPACE"}</span>
         <div className="heading-actions">
           {onOpenWorkspace && <button aria-label="Open workspace" title="Open folder" onClick={onOpenWorkspace}><FolderOpen /></button>}
-          <button aria-label="Refresh files" onClick={onRefresh}><RefreshCw /></button>
-          <button aria-label="More explorer actions"><MoreHorizontal /></button>
+          <button aria-label="Refresh files" title="Refresh workspace files" onClick={onRefresh}><RefreshCw /></button>
         </div>
       </div>
       <div className="tree-scroll">
         {nodes.map((node) => (
           <TreeItem key={node.path} node={node} depth={0} activePath={activePath} onOpen={onOpen} />
         ))}
-      </div>
-      <div className="explorer-footer">
-        <div><ChevronRight /> Outline</div>
-        <div><ChevronRight /> Timeline</div>
       </div>
     </aside>
   );

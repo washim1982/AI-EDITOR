@@ -1,9 +1,15 @@
 import type {
   AgentEvent,
+  AgentDecisionRequest,
   AgentRunRequest,
+  ForgeRunManifest,
+  ProjectCheckResult,
+  ProjectScripts,
   ProviderConfig,
   RuntimeStatus,
   TreeNode,
+  WorkspaceSearchResult,
+  WorkspaceStatus,
   WorkspaceFile,
 } from "../shared/types";
 
@@ -43,12 +49,71 @@ export async function fetchRuntimes(): Promise<RuntimeStatus[]> {
   return payload.runtimes;
 }
 
+export async function sendChat(
+  prompt: string,
+  provider: ProviderConfig,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  signal: AbortSignal,
+): Promise<string> {
+  const payload = await jsonResponse<{ message: string }>(await fetch("/api/chat", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ prompt, provider, history }),
+    signal,
+  }));
+  return payload.message;
+}
+
+export async function searchWorkspace(query: string, signal?: AbortSignal): Promise<WorkspaceSearchResult[]> {
+  const payload = await jsonResponse<{ results: WorkspaceSearchResult[] }>(await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal }));
+  return payload.results;
+}
+
+export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {
+  return jsonResponse(await fetch("/api/workspace/status"));
+}
+
+export async function fetchProjectScripts(): Promise<ProjectScripts> {
+  return jsonResponse(await fetch("/api/project/scripts"));
+}
+
+export async function runProjectCheck(name: string, signal?: AbortSignal): Promise<ProjectCheckResult> {
+  return jsonResponse(await fetch("/api/project/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+    signal,
+  }));
+}
+
 export async function streamAgentRun(
   request: AgentRunRequest,
   onEvent: (event: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch("/api/agent/run", {
+  return streamAgentEvents("/api/agent/run", request, onEvent, signal);
+}
+
+export async function streamAgentDecision(
+  request: AgentDecisionRequest,
+  onEvent: (event: AgentEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return streamAgentEvents("/api/agent/resume", request, onEvent, signal);
+}
+
+export async function fetchAgentRuns(): Promise<ForgeRunManifest[]> {
+  const payload = await jsonResponse<{ runs: ForgeRunManifest[] }>(await fetch("/api/agent/runs"));
+  return payload.runs;
+}
+
+async function streamAgentEvents(
+  route: string,
+  request: AgentRunRequest | AgentDecisionRequest,
+  onEvent: (event: AgentEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(route, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(request),
@@ -56,7 +121,7 @@ export async function streamAgentRun(
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({ error: response.statusText }))) as { error?: string };
-    throw new Error(payload.error || "Could not start the agent run.");
+    throw new Error(payload.error || "Could not start or resume the Forge run.");
   }
   if (!response.body) throw new Error("The agent stream was unavailable.");
 

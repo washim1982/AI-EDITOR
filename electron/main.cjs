@@ -104,6 +104,7 @@ async function createWindow() {
     minHeight: 660,
     show: false,
     frame: false,
+    icon: path.join(__dirname, "..", "build", "icon.png"),
     backgroundColor: "#08070a",
     title: "Forge — Local Agent IDE",
     webPreferences: {
@@ -136,13 +137,21 @@ app.on("second-instance", () => {
   mainWindow.focus();
 });
 
-app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null);
-  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  await startEmbeddedApi();
-  registerIpc();
-  await createWindow();
-});
+app.whenReady()
+  .then(async () => {
+    app.setAppUserModelId("com.forge.localagent");
+    Menu.setApplicationMenu(null);
+    session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+    await startEmbeddedApi();
+    registerIpc();
+    await createWindow();
+  })
+  .catch((error) => {
+    const message = error instanceof Error ? error.stack || error.message : String(error);
+    console.error("Forge desktop failed to start:", message);
+    dialog.showErrorBox("Forge desktop failed to start", message);
+    app.quit();
+  });
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

@@ -25,6 +25,8 @@ assert.ok(source.includes("return String.raw`<!doctype html>"), "Webview HTML mu
 assert.ok(browserScript.includes("function renderMarkdown(container, value)"), "Markdown response renderer is missing.");
 assert.ok(browserScript.includes("createElement(isResponse ? 'details' : 'div')"), "Collapsible response cards are missing.");
 assert.ok(browserScript.includes("className = 'code-block'"), "Fenced code-block rendering is missing.");
+assert.ok(browserScript.includes("event.kind === 'run.suspended'"), "Forge v2 suspension actions are missing.");
+assert.ok(browserScript.includes("type: 'decision'"), "Forge v2 human-decision messaging is missing.");
 assert.equal(browserScript.includes(".innerHTML"), false, "Model output must not be inserted as raw HTML.");
 assert.ok(source.includes(".code-block code { display: block; padding: 0;"), "Block code must override inherited inline-code decoration.");
 assert.ok(source.includes("background: transparent !important; box-shadow: none !important;"), "Block code background/shadow reset is missing.");
@@ -41,6 +43,8 @@ new Function(renderedHtml.slice(renderedScriptStart, renderedScriptEnd + scriptE
 
 const manifest = JSON.parse(manifestText);
 assert.equal(manifest.contributes.viewsContainers.secondarySidebar[0].id, "forge");
+assert.equal(manifest.contributes.viewsContainers.secondarySidebar[0].icon, "media/forge.svg");
+assert.equal(manifest.icon, "media/forge.png");
 assert.equal(manifest.capabilities.untrustedWorkspaces.supported, "limited");
 assert.ok(manifest.activationEvents.includes("onStartupFinished"));
 console.log(`Forge chat webview contract passed for extension ${manifest.version}.`);

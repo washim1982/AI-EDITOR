@@ -17,6 +17,35 @@ export interface RuntimeStatus {
   error?: string;
 }
 
+export interface WorkspaceSearchResult {
+  path: string;
+  line: number;
+  preview: string;
+}
+
+export interface WorkspaceGitChange {
+  path: string;
+  status: string;
+}
+
+export interface WorkspaceStatus {
+  isRepository: boolean;
+  branch: string;
+  changes: WorkspaceGitChange[];
+  error?: string;
+}
+
+export interface ProjectScripts {
+  checks: string[];
+}
+
+export interface ProjectCheckResult {
+  name: string;
+  command: string;
+  passed: boolean;
+  output: string;
+}
+
 export type ChangeOperation = "create" | "modify" | "delete";
 
 export interface ExecutionBrief {
@@ -68,19 +97,82 @@ export interface MutationSet {
   }>;
 }
 
+export interface ForgeTask {
+  id: string;
+  title: string;
+  objective: string;
+  scope_hint: string[];
+  acceptance_criteria: string[];
+  depends_on: string[];
+  status?: "pending" | "running" | "completed" | "suspended" | "failed" | "abandoned";
+  attempts?: number;
+  changed_paths?: string[];
+  diagnostics?: string;
+}
+
+export type ForgeRunStatus = "planning" | "running" | "suspended" | "completed" | "failed" | "discarded";
+
+export interface ForgeSuspension {
+  reason: "blocker" | "high-risk" | "verification" | "final-verification";
+  message: string;
+  taskId?: string;
+  stageRoot?: string;
+  changedPaths?: string[];
+  diagnostics?: string;
+  allowedActions: Array<"approve" | "retry" | "discard">;
+}
+
+export interface ForgeRunManifest {
+  version: 2;
+  runId: string;
+  objective: string;
+  provider: ProviderConfig;
+  status: ForgeRunStatus;
+  tasks: ForgeTask[];
+  currentTaskId?: string;
+  maxRepairCycles: number;
+  maxReplans: number;
+  replansUsed: number;
+  approvedRiskTaskIds: string[];
+  guidance?: Record<string, string>;
+  suspension?: ForgeSuspension;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentDecisionRequest {
+  runId: string;
+  decision: "approve" | "retry" | "discard";
+  guidance?: string;
+}
+
 export type AgentEventKind =
   | "run.started"
+  | "planner.started"
+  | "plan.validated"
+  | "plan.replanned"
+  | "task.started"
+  | "task.completed"
+  | "task.suspended"
   | "snapshot.created"
   | "gather.started"
   | "retrieval.complete"
   | "brief.validated"
   | "hydration.complete"
   | "apply.started"
+  | "context.requested"
+  | "scope.amendment"
   | "mutation.staged"
   | "verification.command"
   | "verification.result"
   | "repair.started"
+  | "repair.fast"
+  | "repair.deep"
+  | "final.verification.started"
+  | "final.verification.result"
   | "promotion.complete"
+  | "run.suspended"
+  | "run.discarded"
   | "run.completed"
   | "run.failed";
 
@@ -88,7 +180,7 @@ export interface AgentEvent {
   id: string;
   runId: string;
   kind: AgentEventKind;
-  phase: "system" | "gather" | "apply" | "verify" | "promote";
+  phase: "system" | "plan" | "gather" | "apply" | "verify" | "promote" | "human";
   title: string;
   message: string;
   status: "running" | "success" | "error" | "info";
@@ -100,6 +192,9 @@ export interface AgentRunRequest {
   prompt: string;
   provider: ProviderConfig;
   maxRepairCycles?: number;
+  maxReplans?: number;
+  maxTasks?: number;
+  architecture?: "v1" | "v2";
 }
 
 export interface ChatRequest {

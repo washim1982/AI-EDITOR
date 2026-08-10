@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { TreeNode, WorkspaceFile } from "../shared/types.js";
@@ -168,7 +168,7 @@ function isRecoverableReadError(error: unknown): boolean {
   return code !== undefined && ["EACCES", "EBUSY", "ENOENT", "EPERM"].includes(code);
 }
 
-async function readDirectoryOrSkip(absoluteDir: string): Promise<Awaited<ReturnType<typeof fs.readdir>>> {
+async function readDirectoryOrSkip(absoluteDir: string): Promise<Dirent[]> {
   try {
     return await fs.readdir(absoluteDir, { withFileTypes: true });
   } catch (error) {
@@ -422,6 +422,17 @@ export async function removeStage(stageRoot: string): Promise<void> {
     throw new Error("Refusing to remove an unrecognized staging path.");
   }
   await fs.rm(resolved, { recursive: true, force: true });
+}
+
+export async function removeStagesForRun(runId: string): Promise<void> {
+  if (!/^[a-zA-Z0-9_-]{4,160}$/.test(runId)) throw new Error("Invalid staging cleanup identifier.");
+  const tempRoot = path.resolve(os.tmpdir());
+  const prefix = `forge-agent-${runId}-`;
+  const entries = await readDirectoryOrSkip(tempRoot);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    await removeStage(path.join(tempRoot, entry.name));
+  }
 }
 
 export async function fileExistsInWorkspace(relativePath: string): Promise<boolean> {

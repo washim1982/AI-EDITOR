@@ -2,8 +2,9 @@
   "name": "forge-agent",
   "displayName": "Forge Local Agent",
   "description": "Transactional autonomous coding with local Ollama, LM Studio, and llama.cpp models.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "forge",
+  "icon": "media/forge.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.95.0"

@@ -38,6 +38,9 @@ interface WebviewMessage {
   type?: unknown;
   text?: unknown;
   url?: unknown;
+  runId?: unknown;
+  decision?: unknown;
+  guidance?: unknown;
   prompt?: unknown;
   provider?: unknown;
   maxRepairCycles?: unknown;
@@ -341,6 +344,23 @@ class ForgeViewProvider implements vscode.WebviewViewProvider, vscode.Disposable
       this.controller?.abort();
       return;
     }
+    if (message.type === "decision") {
+      const runId = typeof message.runId === "string" ? message.runId : "";
+      const decision = ["approve", "retry", "discard"].includes(String(message.decision)) ? String(message.decision) as "approve" | "retry" | "discard" : undefined;
+      if (!runId || !decision) throw new Error("A suspended Forge v2 run and valid decision are required.");
+      let guidance = typeof message.guidance === "string" ? message.guidance.trim() : "";
+      if (decision === "retry" && !guidance) {
+        guidance = (await vscode.window.showInputBox({
+          title: "Retry Forge v2 task",
+          prompt: "Give Forge guidance for a fresh snapshot and transaction attempt.",
+          value: "Address the reported diagnostics without widening the requested scope.",
+          ignoreFocusOut: true,
+        }))?.trim() || "";
+        if (!guidance) return;
+      }
+      await this.resumeAgent(runId, decision, guidance);
+      return;
+    }
     if (message.type === "run") {
       const prompt = typeof message.prompt === "string" ? message.prompt.trim() : "";
       if (!prompt) throw new Error("Enter a message before sending.");
@@ -512,7 +532,7 @@ class ForgeViewProvider implements vscode.WebviewViewProvider, vscode.Disposable
       const response = await this.sidecar.request("/api/agent/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, provider, maxRepairCycles }),
+        body: JSON.stringify({ prompt, provider, maxRepairCycles, maxReplans: 1, maxTasks: 6, architecture: "v2" }),
         signal: this.controller.signal,
       });
       if (!response.ok) {
@@ -536,6 +556,52 @@ class ForgeViewProvider implements vscode.WebviewViewProvider, vscode.Disposable
     } catch (error) {
       if (this.controller.signal.aborted) {
         this.output.appendLine("[agent] Run cancelled by user.");
+        void this.view?.webview.postMessage({ type: "cancelled" });
+      } else {
+        throw error;
+      }
+    } finally {
+      this.running = false;
+      this.controller = undefined;
+      this.statusBar.text = this.sidecarState === "ready" ? "$(sparkle) Forge: ready" : `$(circle-outline) Forge: ${this.sidecarState}`;
+      void this.view?.webview.postMessage({ type: "runState", running: false });
+    }
+  }
+
+  private async resumeAgent(runId: string, decision: "approve" | "retry" | "discard", guidance = ""): Promise<void> {
+    if (this.running) throw new Error("A Forge request is already running.");
+    this.running = true;
+    this.controller = new AbortController();
+    this.statusBar.text = "$(sync~spin) Forge: resuming v2";
+    void this.view?.webview.postMessage({ type: "runState", running: true });
+    this.output.appendLine(`[agent:v2] ${decision} requested for ${runId}`);
+    try {
+      const response = await this.sidecar.request("/api/agent/resume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ runId, decision, guidance }),
+        signal: this.controller.signal,
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(payload.error || `Forge v2 decision failed (${response.status}).`);
+      }
+      if (!response.body) throw new Error("The Forge v2 resume event stream was unavailable.");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) this.forwardAgentEvent(line);
+        if (done) break;
+      }
+      if (buffer.trim()) this.forwardAgentEvent(buffer);
+    } catch (error) {
+      if (this.controller.signal.aborted) {
+        this.output.appendLine("[agent:v2] Resume cancelled by user.");
         void this.view?.webview.postMessage({ type: "cancelled" });
       } else {
         throw error;
@@ -712,6 +778,9 @@ function webviewHtml(): string {
     .code-copy:hover { color: var(--vscode-foreground); background: var(--vscode-toolbar-hoverBackground); }
     .code-block pre { margin: 0; padding: 10px; overflow: auto; background: transparent !important; box-shadow: none !important; tab-size: 2; }
     .code-block code { display: block; padding: 0; color: var(--vscode-editor-foreground); border: 0; border-radius: 0; background: transparent !important; box-shadow: none !important; font: 12px/1.55 var(--vscode-editor-font-family); text-shadow: none; white-space: pre; }
+    .decision-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--vscode-panel-border); }
+    .decision-actions button { min-height: 25px; padding: 2px 8px; font-size: 11px; }
+    .decision-actions button.danger { color: var(--vscode-errorForeground); border: 1px solid var(--vscode-inputValidation-errorBorder); background: transparent; }
     .empty { display: grid; min-height: 100%; place-items: center; padding: 18px 4px; color: var(--vscode-descriptionForeground); text-align: center; }
     .error-box { display: none; flex: none; margin-bottom: 9px; padding: 8px; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-inputValidation-errorBorder); background: var(--vscode-inputValidation-errorBackground); }
     .notice { display: none; flex: none; gap: 8px; align-items: center; margin-bottom: 9px; padding: 8px; border: 1px solid var(--vscode-inputValidation-warningBorder); border-radius: 5px; background: var(--vscode-inputValidation-warningBackground); }
@@ -766,7 +835,7 @@ function webviewHtml(): string {
       <select id="runtime" class="toolbar-select" aria-label="Local runtime"></select>
       <select id="model" class="toolbar-select" aria-label="Local model"><option value="">Detecting...</option></select>
       <span class="toolbar-spacer"></span>
-      <select id="mode" class="toolbar-select" aria-label="Agent mode"><option value="default">Default</option><option value="chat">Chat</option><option value="agent">Agent</option></select>
+      <select id="mode" class="toolbar-select" aria-label="Agent mode"><option value="default">Default</option><option value="chat">Chat</option><option value="agent">Agent v2</option></select>
       <label class="toggle-label" title="Allow bounded automatic repair cycles"><span>Autopilot</span><input id="autopilot" type="checkbox" checked><span class="toggle-track"></span></label>
       <button id="cancel" class="secondary">Stop</button>
       <button id="collapseResponses" class="toolbar-button" title="Collapse all responses" aria-label="Collapse all responses">&#8648;</button>
@@ -1082,6 +1151,24 @@ function webviewHtml(): string {
         const body = document.createElement('div');
         body.className = 'event-body';
         body.append(message);
+        if (event.kind === 'run.suspended' && event.data && typeof event.data.runId === 'string' && Array.isArray(event.data.allowedActions)) {
+          const actions = document.createElement('div');
+          actions.className = 'decision-actions';
+          const labels = { approve: 'Approve risk', retry: 'Retry with guidance', discard: 'Discard run' };
+          for (const decision of event.data.allowedActions) {
+            if (!Object.hasOwn(labels, decision)) continue;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = labels[decision];
+            if (decision === 'discard') button.className = 'danger';
+            button.addEventListener('click', () => {
+              actions.querySelectorAll('button').forEach(item => { item.disabled = true; });
+              vscode.postMessage({ type: 'decision', runId: event.data.runId, decision });
+            });
+            actions.append(button);
+          }
+          body.append(actions);
+        }
         item.append(head, body);
         item.addEventListener('toggle', updateCollapseButton);
       } else {
