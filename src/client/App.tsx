@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import Editor, { type BeforeMount } from "@monaco-editor/react";
 import {
   Blocks,
@@ -43,6 +52,84 @@ import type {
 } from "../shared/types";
 
 const forgeIconUrl = new URL("./assets/forge-code-flame.png", import.meta.url).href;
+
+const PANE_LAYOUT_KEY = "forge.pane-layout.v1";
+const DEFAULT_EXPLORER_WIDTH = 250;
+const DEFAULT_AGENT_WIDTH = 390;
+const EXPLORER_MIN_WIDTH = 160;
+const EXPLORER_MAX_WIDTH = 480;
+const AGENT_MIN_WIDTH = 280;
+const AGENT_MAX_WIDTH = 620;
+const EDITOR_MIN_WIDTH = 320;
+const ACTIVITY_RAIL_WIDTH = 54;
+const RESIZER_WIDTH = 5;
+
+interface PaneLayout {
+  explorer: number;
+  agent: number;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), Math.max(minimum, maximum));
+}
+
+function loadPaneLayout(): PaneLayout {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PANE_LAYOUT_KEY) || "{}") as Partial<PaneLayout>;
+    return {
+      explorer: clamp(Number(stored.explorer) || DEFAULT_EXPLORER_WIDTH, EXPLORER_MIN_WIDTH, EXPLORER_MAX_WIDTH),
+      agent: clamp(Number(stored.agent) || DEFAULT_AGENT_WIDTH, AGENT_MIN_WIDTH, AGENT_MAX_WIDTH),
+    };
+  } catch {
+    return { explorer: DEFAULT_EXPLORER_WIDTH, agent: DEFAULT_AGENT_WIDTH };
+  }
+}
+
+function PaneResizer({
+  className,
+  label,
+  value,
+  minimum,
+  maximum,
+  onPointerDown,
+  onStep,
+  onReset,
+}: {
+  className: string;
+  label: string;
+  value: number;
+  minimum: number;
+  maximum: number;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onStep: (deltaX: number) => void;
+  onReset: () => void;
+}) {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      onStep(event.key === "ArrowLeft" ? -16 : 16);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      onReset();
+    }
+  };
+
+  return (
+    <div
+      className={`pane-resizer ${className}`}
+      role="separator"
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={minimum}
+      aria-valuemax={maximum}
+      aria-valuenow={Math.round(value)}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+      onDoubleClick={onReset}
+    ><span /></div>
+  );
+}
 
 const DEFAULTS: Record<ProviderKind, ProviderConfig> = {
   ollama: {
@@ -252,6 +339,7 @@ export default function App() {
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>("explorer");
   const [agentOpen, setAgentOpen] = useState(true);
+  const [paneLayout, setPaneLayout] = useState<PaneLayout>(loadPaneLayout);
   const [editorMaximized, setEditorMaximized] = useState(false);
   const [splitEditor, setSplitEditor] = useState(false);
   const [loadingFile, setLoadingFile] = useState(false);
@@ -261,6 +349,7 @@ export default function App() {
   const [task, setTask] = useState("");
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [chatMessages, setChatMessages] = useState<ForgeChatMessage[]>([]);
+  const [agentRequest, setAgentRequest] = useState<ForgeChatMessage>();
   const [agentMode, setAgentMode] = useState<"chat" | "agent">("chat");
   const [agentError, setAgentError] = useState<string>();
   const [running, setRunning] = useState(false);
@@ -270,10 +359,55 @@ export default function App() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
   const controllerRef = useRef<AbortController>();
+  const workbenchRef = useRef<HTMLDivElement>(null);
   const bootstrappedRef = useRef(false);
   const fileHistoryRef = useRef<string[]>([]);
   const fileHistoryIndexRef = useRef(-1);
   const desktop = Boolean(window.forgeDesktop);
+
+  const resizePane = useCallback((pane: keyof PaneLayout, requestedWidth: number) => {
+    setPaneLayout((current) => {
+      const otherWidth = pane === "explorer"
+        ? (agentOpen ? current.agent : 0)
+        : (explorerOpen ? current.explorer : 0);
+      const visibleResizers = Number(explorerOpen) + Number(agentOpen);
+      const workbenchWidth = workbenchRef.current?.getBoundingClientRect().width || window.innerWidth;
+      const available = workbenchWidth - ACTIVITY_RAIL_WIDTH - otherWidth - EDITOR_MIN_WIDTH - (visibleResizers * RESIZER_WIDTH);
+      const minimum = pane === "explorer" ? EXPLORER_MIN_WIDTH : AGENT_MIN_WIDTH;
+      const configuredMaximum = pane === "explorer" ? EXPLORER_MAX_WIDTH : AGENT_MAX_WIDTH;
+      const nextWidth = clamp(requestedWidth, minimum, Math.min(configuredMaximum, available));
+      if (current[pane] === nextWidth) return current;
+      return { ...current, [pane]: nextWidth };
+    });
+  }, [agentOpen, explorerOpen]);
+
+  const beginPaneResize = useCallback((pane: keyof PaneLayout, pointerEvent: ReactPointerEvent<HTMLDivElement>) => {
+    if (pointerEvent.button !== 0) return;
+    pointerEvent.preventDefault();
+    const startX = pointerEvent.clientX;
+    const startWidth = paneLayout[pane];
+    document.body.classList.add("pane-resizing");
+
+    const onMove = (event: PointerEvent) => {
+      const delta = event.clientX - startX;
+      resizePane(pane, startWidth + (pane === "explorer" ? delta : -delta));
+    };
+    const onStop = () => {
+      document.body.classList.remove("pane-resizing");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onStop);
+      window.removeEventListener("pointercancel", onStop);
+      window.removeEventListener("blur", onStop);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onStop, { once: true });
+    window.addEventListener("pointercancel", onStop, { once: true });
+    window.addEventListener("blur", onStop, { once: true });
+  }, [paneLayout, resizePane]);
+
+  useEffect(() => {
+    localStorage.setItem(PANE_LAYOUT_KEY, JSON.stringify(paneLayout));
+  }, [paneLayout]);
 
   const activeFile = tabs.find((tab) => tab.path === activePath);
   const activeDraft = activePath ? drafts[activePath] ?? activeFile?.content ?? "" : "";
@@ -479,6 +613,9 @@ export default function App() {
       }
       return;
     }
+    const userRequest: ForgeChatMessage = { id: crypto.randomUUID(), role: "user", content: prompt, timestamp: new Date().toISOString() };
+    setAgentRequest(userRequest);
+    setTask("");
     setEvents([]);
     try {
       await streamAgentRun({ prompt, provider: config, maxRepairCycles: 1, maxReplans: 1, maxTasks: 6, architecture: "v2" }, (agentEvent) => {
@@ -611,7 +748,14 @@ export default function App() {
           </div>
         </header>
 
-        <div className="workbench">
+        <div
+          ref={workbenchRef}
+          className="workbench"
+          style={{
+            "--explorer-width": `${paneLayout.explorer}px`,
+            "--agent-width": `${paneLayout.agent}px`,
+          } as CSSProperties}
+        >
           <nav className="activity-rail">
             <button className="brand-mark" title="Forge agent" onClick={() => setAgentOpen(true)}><img src={forgeIconUrl} alt="" /></button>
             <div className="activity-primary">
@@ -630,6 +774,19 @@ export default function App() {
 
           {explorerOpen && !editorMaximized && (
             <WorkbenchPanel view={workbenchView} nodes={tree} activePath={activePath} rootName={rootName} onOpen={(path) => void openFile(path)} onRefreshTree={() => void refreshTree()} onOpenWorkspace={desktop ? () => void openWorkspace() : undefined} onOpenSettings={() => { setSettingsOpen(true); void refreshRuntimes(); }} onStatus={setWorkspaceStatus} />
+          )}
+
+          {explorerOpen && !editorMaximized && (
+            <PaneResizer
+              className="explorer-resizer"
+              label="Resize Explorer and editor"
+              value={paneLayout.explorer}
+              minimum={EXPLORER_MIN_WIDTH}
+              maximum={EXPLORER_MAX_WIDTH}
+              onPointerDown={(event) => beginPaneResize("explorer", event)}
+              onStep={(deltaX) => resizePane("explorer", paneLayout.explorer + deltaX)}
+              onReset={() => resizePane("explorer", DEFAULT_EXPLORER_WIDTH)}
+            />
           )}
 
           <section className="editor-pane">
@@ -702,9 +859,23 @@ export default function App() {
           </section>
 
           {agentOpen && !editorMaximized && (
+            <PaneResizer
+              className="agent-resizer"
+              label="Resize editor and Agent"
+              value={paneLayout.agent}
+              minimum={AGENT_MIN_WIDTH}
+              maximum={AGENT_MAX_WIDTH}
+              onPointerDown={(event) => beginPaneResize("agent", event)}
+              onStep={(deltaX) => resizePane("agent", paneLayout.agent - deltaX)}
+              onReset={() => resizePane("agent", DEFAULT_AGENT_WIDTH)}
+            />
+          )}
+
+          {agentOpen && !editorMaximized && (
             <AgentPanel
               events={events}
               messages={chatMessages}
+              agentRequest={agentRequest}
               mode={agentMode}
               running={running}
               config={config}
@@ -719,7 +890,7 @@ export default function App() {
               onModelChange={switchModel}
               onModeChange={setAgentMode}
               onRefreshModels={() => void refreshRuntimes()}
-              onNewSession={() => { if (!running) { setEvents([]); setChatMessages([]); setAgentError(undefined); setTask(""); } }}
+              onNewSession={() => { if (!running) { setEvents([]); setChatMessages([]); setAgentRequest(undefined); setAgentError(undefined); setTask(""); } }}
               onDecision={(decision) => void decideSuspendedRun(decision)}
             />
           )}

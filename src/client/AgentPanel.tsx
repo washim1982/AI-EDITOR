@@ -46,6 +46,7 @@ markdown.renderer.rules.link_open = (tokens, index, options, environment, self) 
 interface AgentPanelProps {
   events: AgentEvent[];
   messages: ForgeChatMessage[];
+  agentRequest?: ForgeChatMessage;
   mode: "chat" | "agent";
   running: boolean;
   config: ProviderConfig;
@@ -117,13 +118,17 @@ function EmptySession({ mode }: { mode: "chat" | "agent" }) {
 
 function ChatTimeline({ messages }: { messages: ForgeChatMessage[] }) {
   return <div className="chat-timeline">{messages.map((message, index) => message.role === "user" ? (
-    <article className="chat-message user" key={message.id}>
-      <header><strong>You</strong><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
-      <p>{message.content}</p>
-    </article>
+    <UserMessage key={message.id} message={message} />
   ) : (
     <ChatResponse key={message.id} message={message} expanded={index === messages.length - 1} />
   ))}</div>;
+}
+
+function UserMessage({ message, className = "" }: { message: ForgeChatMessage; className?: string }) {
+  return <article className={`chat-message user ${className}`.trim()}>
+    <header><strong>You</strong><time>{new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></header>
+    <p>{message.content}</p>
+  </article>;
 }
 
 function ChatResponse({ message, expanded }: { message: ForgeChatMessage; expanded: boolean }) {
@@ -137,6 +142,7 @@ function ChatResponse({ message, expanded }: { message: ForgeChatMessage; expand
 export function AgentPanel({
   events,
   messages,
+  agentRequest,
   mode,
   running,
   config,
@@ -203,9 +209,10 @@ export function AgentPanel({
           {historyError && <div className="inline-error"><XCircle />{historyError}</div>}
           {!historyError && !runHistory.length && <div className="panel-empty">No persisted agent runs yet.</div>}
           {runHistory.map((run) => <article key={run.runId}><div><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{run.status}</span></div><small>{run.tasks.filter((task) => task.status === "completed").length}/{run.tasks.length} tasks · {new Date(run.updatedAt).toLocaleString()}</small></article>)}
-        </div> : mode === "chat" ? (messages.length ? <ChatTimeline messages={messages} /> : <EmptySession mode={mode} />) : events.length === 0 ? <EmptySession mode={mode} /> : events.map((item) => (
-          <TimelineEvent key={item.id} event={item} last={item.id === lastEventId} />
-        ))}
+        </div> : mode === "chat" ? (messages.length ? <ChatTimeline messages={messages} /> : <EmptySession mode={mode} />) : !agentRequest && events.length === 0 ? <EmptySession mode={mode} /> : <div className="agent-run-timeline">
+          {agentRequest && <UserMessage message={agentRequest} className="agent-request" />}
+          {events.map((item) => <TimelineEvent key={item.id} event={item} last={item.id === lastEventId} />)}
+        </div>}
         {error && <div className="inline-error"><XCircle />{error}</div>}
       </div>
       {running && (
@@ -225,16 +232,23 @@ export function AgentPanel({
         </div>
       )}
       <div className="composer-wrap">
-        <div className="composer">
-          <textarea
-            value={task}
-            onChange={(event) => onTaskChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) onRun();
-            }}
-            placeholder="Ask Forge to build, fix, or refactor…"
-            rows={3}
-          />
+        <div className={`composer ${running ? "processing" : ""}`} aria-busy={running}>
+          <div className="composer-input">
+            <textarea
+              value={task}
+              onChange={(event) => onTaskChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) onRun();
+              }}
+              placeholder={running ? "" : "Ask Forge to build, fix, or refactor…"}
+              disabled={running}
+              rows={3}
+            />
+            {running && <div className="composer-progress" role="status" aria-live="polite">
+              <LoaderCircle className="spinning" />
+              <span>{mode === "chat" ? "Generating a local response…" : "Forge is processing your request…"}</span>
+            </div>}
+          </div>
           <div className="composer-toolbar">
             <div className="provider-switch">
               <button className="runtime-refresh" onClick={onRefreshModels} title="Refresh local models"><span className={`runtime-dot ${runtime?.reachable && runtime.models.length ? "online" : "offline"}`} /><RefreshCw /></button>
@@ -254,12 +268,13 @@ export function AgentPanel({
               <option value="agent">Agent v2</option>
             </select>
             <button
-              className={`send-button ${task.trim() ? "enabled" : ""}`}
+              className={`send-button ${task.trim() ? "enabled" : ""} ${running ? "processing" : ""}`}
               disabled={(!task.trim() || !config.model) && !running}
               onClick={running ? onCancel : onRun}
               aria-label={running ? "Stop agent" : "Run agent"}
+              title={running ? "Forge is processing. Click to stop." : "Send request"}
             >
-              {running ? <Square /> : <ArrowUp />}
+              {running ? <><LoaderCircle className="spinning" /><Square className="stop-glyph" /></> : <ArrowUp />}
             </button>
           </div>
         </div>

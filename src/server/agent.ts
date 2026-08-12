@@ -44,6 +44,7 @@ interface VerificationResult {
   passed: boolean;
   diagnostics: string;
   commands: Array<{ command: string; passed: boolean; output: string }>;
+  deferredChecks?: string[];
 }
 
 interface StagedMutation {
@@ -223,6 +224,9 @@ function validateBrief(
 
   const rawEvidence = Array.isArray(record.evidence) ? record.evidence : [];
   const evidenceIds = new Set(availableEvidence.map((item) => item.id));
+  const emptyWorkspaceBaseline = snapshot.files.length === 0
+    ? availableEvidence.find((item) => item.source === "artifact" && item.path === "forge://empty-workspace")
+    : undefined;
   const evidence: ExecutionBrief["evidence"] = [];
   for (const item of rawEvidence) {
     const evidenceRecord = asRecord(item);
@@ -231,15 +235,28 @@ function validateBrief(
       continue;
     }
     const source = availableEvidence.find((candidate) => candidate.id === evidenceRecord.id)!;
+    const evidenceSource = source.source || "workspace";
     evidence.push({
       id: source.id,
-      source: "workspace",
+      source: evidenceSource,
       path_or_uri: source.path,
-      reason: typeof evidenceRecord.reason === "string" ? evidenceRecord.reason : "Repository evidence",
+      reason: typeof evidenceRecord.reason === "string" ? evidenceRecord.reason : evidenceSource === "workspace" ? "Repository evidence" : "Empty workspace baseline",
       sha: source.sha,
       start_line: source.startLine,
       end_line: source.endLine,
-      trust: "trusted-workspace",
+      trust: evidenceSource === "workspace" ? "trusted-workspace" : "derived",
+    });
+  }
+  if (emptyWorkspaceBaseline && !evidence.some((item) => item.id === emptyWorkspaceBaseline.id)) {
+    evidence.push({
+      id: emptyWorkspaceBaseline.id,
+      source: "artifact",
+      path_or_uri: emptyWorkspaceBaseline.path,
+      reason: "The selected snapshot is empty and the user requested new project files.",
+      sha: emptyWorkspaceBaseline.sha,
+      start_line: emptyWorkspaceBaseline.startLine,
+      end_line: emptyWorkspaceBaseline.endLine,
+      trust: "derived",
     });
   }
 
@@ -280,9 +297,15 @@ function validateBrief(
     if (operation !== "create" && change.preimage_sha !== existing?.sha) {
       errors.push(`${safePath} preimage_sha must equal ${existing?.sha || "the snapshot hash"}`);
     }
-    const referencedEvidence = stringArray(change.evidence_ids) || [];
+    let referencedEvidence = stringArray(change.evidence_ids) || [];
+    if (operation === "create" && emptyWorkspaceBaseline && (!referencedEvidence.length || referencedEvidence.some((id) => !evidenceIds.has(id)))) {
+      referencedEvidence = [emptyWorkspaceBaseline.id];
+    }
     if (!referencedEvidence.length || referencedEvidence.some((id) => !evidenceIds.has(id))) {
       errors.push(`change ${change.id} must cite supplied evidence IDs`);
+    }
+    if (operation !== "create" && referencedEvidence.some((id) => availableEvidence.find((item) => item.id === id)?.source === "artifact")) {
+      errors.push(`change ${change.id} may use empty-workspace evidence only for create operations`);
     }
     changes.push({
       id: change.id,
@@ -457,6 +480,20 @@ function scopeAmendmentAllowed(task: ForgeTask, requestedPaths: string[]): boole
   }));
 }
 
+function createEmptyWorkspaceEvidence(objective: string, snapshot: WorkspaceSnapshot): RetrievedEvidence {
+  const content = `The selected workspace is empty at snapshot ${snapshot.id}. The user requested a new project with this objective:\n${objective.slice(0, 8000)}`;
+  return {
+    id: `ev_empty_${sha256(`${snapshot.id}:${objective}`).slice(0, 12)}`,
+    source: "artifact",
+    path: "forge://empty-workspace",
+    startLine: 1,
+    endLine: content.split(/\r?\n/).length,
+    sha: sha256(content),
+    score: Number.MAX_SAFE_INTEGER,
+    content,
+  };
+}
+
 async function gatherBrief(
   request: AgentRunRequest,
   snapshot: WorkspaceSnapshot,
@@ -479,15 +516,21 @@ async function gatherBrief(
     signal,
   );
   const plan = validateRetrievalPlan(parseModelJson(planRaw), snapshot);
-  const evidence = await retrieveEvidence([...plan.queries, request.prompt], plan.file_hints);
+  const retrievedEvidence = await retrieveEvidence([...plan.queries, request.prompt], plan.file_hints);
+  const evidence = retrievedEvidence.length || snapshot.files.length
+    ? retrievedEvidence
+    : [createEmptyWorkspaceEvidence(request.prompt, snapshot)];
+  const workspaceEvidence = evidence.filter((item) => (item.source || "workspace") === "workspace");
   emit(event(
     runId,
     "retrieval.complete",
     "gather",
     "Repository evidence collected",
-    `${evidence.length} focused regions across ${new Set(evidence.map((item) => item.path)).size} files.`,
+    workspaceEvidence.length
+      ? `${workspaceEvidence.length} focused regions across ${new Set(workspaceEvidence.map((item) => item.path)).size} files.`
+      : "The empty workspace baseline is available as evidence for create-only changes.",
     "success",
-    { queries: plan.queries, files: [...new Set(evidence.map((item) => item.path))] },
+    { queries: plan.queries, files: [...new Set(workspaceEvidence.map((item) => item.path))], emptyWorkspace: !workspaceEvidence.length },
   ));
 
   const evidenceText = evidence
@@ -505,7 +548,7 @@ async function gatherBrief(
   "blockers": [],
   "risk": {"level":"low|medium|high","reasons":["..."]}
 }`;
-  const gatherUserPrompt = `Produce the final ExecutionBrief for the task. Return JSON only and follow this shape exactly:\n${schema}\n\nRules:\n- Use only supplied evidence IDs.\n- Use exact snapshot paths and hashes.\n- Do not target discussion folders.\n- Keep the write set minimal.\n- If blocked, return no changes and at least one blocker.\n- Suggested commands are advisory; trusted infrastructure chooses what runs.\n\nTASK\n${request.prompt}\n\n${repairDiagnostics ? `PREVIOUS VERIFICATION DIAGNOSTICS\n${repairDiagnostics.slice(0, 12000)}\n\n` : ""}REPOSITORY EVIDENCE\n${evidenceText.slice(0, 80_000)}`;
+  const gatherUserPrompt = `Produce the final ExecutionBrief for the task. Return JSON only and follow this shape exactly:\n${schema}\n\nRules:\n- Use only supplied evidence IDs.\n- Use exact snapshot paths and hashes.\n- An empty-workspace baseline may support create operations only; it never justifies modify or delete.\n- Do not target discussion folders.\n- Keep the write set minimal.\n- If blocked, return no changes and at least one blocker.\n- Suggested commands are advisory; trusted infrastructure chooses what runs.\n\nTASK\n${request.prompt}\n\n${repairDiagnostics ? `PREVIOUS VERIFICATION DIAGNOSTICS\n${repairDiagnostics.slice(0, 12000)}\n\n` : ""}REPOSITORY EVIDENCE\n${evidenceText.slice(0, 80_000)}`;
 
   let briefRaw = await chatWithLocalModel(
     request.provider,
@@ -699,9 +742,24 @@ async function verifyStage(
 
   const packagePath = path.join(stageRoot, "package.json");
   try {
-    const packageJson = JSON.parse(await fs.readFile(packagePath, "utf8")) as { scripts?: Record<string, string> };
+    const packageJson = JSON.parse(await fs.readFile(packagePath, "utf8")) as {
+      scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
     const scripts = packageJson.scripts || {};
     const checks = ["typecheck", "lint", "test", "build"].filter((name) => Boolean(scripts[name]));
+    const dependencyCount = Object.keys(packageJson.dependencies || {}).length + Object.keys(packageJson.devDependencies || {}).length;
+    const hasNodeModules = await fs.stat(path.join(stageRoot, "node_modules")).then((stat) => stat.isDirectory()).catch(() => false);
+    if (checks.length && dependencyCount > 0 && !hasNodeModules) {
+      const deferredChecks = checks.map((check) => `npm run ${check}`);
+      return {
+        passed: true,
+        diagnostics: `Static validation passed. Deferred ${deferredChecks.join(", ")} because this new workspace has no installed dependencies. Run npm install, then use Run and checks to execute the package gates.`,
+        commands: [],
+        deferredChecks,
+      };
+    }
     for (const check of checks) {
       const commandLabel = `npm run ${check}`;
       emit(event(runId, "verification.command", "verify", "Running deterministic check", commandLabel, "running", { command: commandLabel }));
@@ -945,10 +1003,16 @@ async function runTaskTransaction(
       }));
       const verification = await verifyStage(stageRoot, staged, signal, runId, emit);
       const failureClass = verification.passed ? undefined : classifyVerificationFailure(verification);
-      emit(event(runId, "verification.result", "verify", verification.passed ? "Verification passed" : "Verification found issues", verification.passed ? "All configured checks passed in the isolated workspace." : verification.diagnostics.slice(0, 1000), verification.passed ? "success" : "error", {
+      const verificationDeferred = Boolean(verification.deferredChecks?.length);
+      const verificationTitle = verification.passed
+        ? verificationDeferred ? "Static verification passed" : "Verification passed"
+        : "Verification found issues";
+      const verificationStatus = verification.passed ? verificationDeferred ? "info" : "success" : "error";
+      emit(event(runId, "verification.result", "verify", verificationTitle, verification.diagnostics.slice(0, 1000), verificationStatus, {
         taskId: task.id,
         failureClass,
         commands: verification.commands,
+        deferredChecks: verification.deferredChecks,
       }));
 
       if (verification.passed) {
@@ -994,8 +1058,14 @@ async function finalRunVerification(manifest: ForgeRunManifest, emit: EventSink,
   const stageRoot = await cloneWorkspaceToStage(`${manifest.runId}-final`);
   try {
     const result = await verifyStage(stageRoot, [], signal, manifest.runId, emit);
-    emit(event(manifest.runId, "final.verification.result", "verify", result.passed ? "Aggregate verification passed" : "Aggregate verification failed", result.passed ? "The combined workspace passed all configured deterministic gates." : result.diagnostics.slice(0, 1200), result.passed ? "success" : "error", {
+    const verificationDeferred = Boolean(result.deferredChecks?.length);
+    const verificationTitle = result.passed
+      ? verificationDeferred ? "Aggregate static verification passed" : "Aggregate verification passed"
+      : "Aggregate verification failed";
+    const verificationStatus = result.passed ? verificationDeferred ? "info" : "success" : "error";
+    emit(event(manifest.runId, "final.verification.result", "verify", verificationTitle, result.diagnostics.slice(0, 1200), verificationStatus, {
       commands: result.commands,
+      deferredChecks: result.deferredChecks,
       acceptanceCriteria: manifest.tasks.flatMap((task) => task.acceptance_criteria),
     }));
     return result;
@@ -1318,4 +1388,6 @@ export const __testables = {
   validateMutations,
   validateApplyOutcome,
   classifyVerificationFailure,
+  createEmptyWorkspaceEvidence,
+  verifyStage,
 };

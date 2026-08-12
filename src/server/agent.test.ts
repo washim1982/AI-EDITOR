@@ -104,6 +104,58 @@ test("Forge v2 classifies deterministic verification failures", () => {
   assert.equal(__testables.classifyVerificationFailure({ passed: false, diagnostics: "invalid JSON", commands: [] }), "syntax");
 });
 
+test("empty workspaces provide derived evidence for create-only briefs", () => {
+  const snapshot = { id: "snap_empty", createdAt: new Date(0).toISOString(), files: [] };
+  const evidence = __testables.createEmptyWorkspaceEvidence("Create a web application", snapshot);
+  const brief = __testables.validateBrief({
+    version: 1,
+    task_id: "bootstrap",
+    snapshot_id: snapshot.id,
+    objective: "Create a web application",
+    evidence: [],
+    changes: [{
+      id: "c1",
+      path: "package.json",
+      operation: "create",
+      intent: "Create the project manifest",
+      evidence_ids: [],
+      depends_on: [],
+    }],
+    invariants: ["Create files only inside the selected workspace"],
+    validation: { required_checks: [], suggested_commands: [] },
+    blockers: [],
+    risk: { level: "low", reasons: [] },
+  }, snapshot, "Create a web application", [evidence]);
+
+  assert.equal(brief.evidence[0].source, "artifact");
+  assert.equal(brief.evidence[0].path_or_uri, "forge://empty-workspace");
+  assert.equal(brief.changes[0].operation, "create");
+  assert.deepEqual(brief.changes[0].evidence_ids, [evidence.id]);
+});
+
+test("new projects defer package gates until dependencies are installed", async () => {
+  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "forge-bootstrap-verification-"));
+  const packageContent = JSON.stringify({
+    scripts: { build: "vite build" },
+    dependencies: { vite: "^6.0.0" },
+  });
+  try {
+    await fs.writeFile(path.join(fixtureRoot, "package.json"), packageContent, "utf8");
+    const result = await __testables.verifyStage(
+      fixtureRoot,
+      [{ path: "package.json", operation: "create", content: packageContent }],
+      new AbortController().signal,
+      "run",
+      () => undefined,
+    );
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.deferredChecks, ["npm run build"]);
+    assert.match(result.diagnostics, /npm install/i);
+  } finally {
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("workspace snapshots exclude generated, vendored, and discussion trees", async () => {
   const originalRoot = workspaceRoot();
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "forge-snapshot-test-"));

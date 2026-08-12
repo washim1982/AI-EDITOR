@@ -102,6 +102,7 @@ export interface WorkspaceSnapshot {
 
 export interface RetrievedEvidence {
   id: string;
+  source?: "workspace" | "artifact";
   path: string;
   startLine: number;
   endLine: number;
